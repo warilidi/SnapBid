@@ -1,0 +1,6 @@
+python-socketio[client]==5.18.1
+msgpack==1.2.4
+aiohttp==3.14.5
+Brotli==1.2.1
+aiogram==3.34.0
+pytest==9.1.1
