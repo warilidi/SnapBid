@@ -1,3 +1,4 @@
+import msgpack
 import pytest
 
 from config import Config
@@ -69,6 +70,19 @@ def test_journal_dedup_and_outcome():
     assert j.check_outcomes(book(m7=80), CFG, now=1000 + HOLD) == 1
     roi = j.db.execute("SELECT later_roi FROM signals").fetchone()[0]
     assert roi == pytest.approx((80 * 0.92 - 80) / 80)
+
+
+@pytest.mark.parametrize(("lock", "expected"), [
+    (msgpack.ExtType(1, b"2026-11-27T00:00:00Z"), "2026-11-27T00:00:00Z"),
+    (msgpack.ExtType(7, b"\xff\x00"), "msgpack-ext-7:ff00"),
+])
+def test_msgpack_lock_is_preserved_in_journal(lock, expected):
+    signal = evaluate(sale(lock=lock), book(), CFG)
+    assert signal.lock == expected
+
+    journal = Journal(":memory:")
+    assert journal.add(signal)
+    assert journal.db.execute("SELECT lock FROM signals").fetchone()[0] == expected
 
 
 def test_render_escapes_html():

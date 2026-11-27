@@ -2,6 +2,8 @@
 import time
 from dataclasses import dataclass
 
+import msgpack
+
 from config import Config
 
 Key = tuple[str, str | None]
@@ -70,6 +72,15 @@ class Signal:
     url: str
 
 
+def _normalize_lock(value: str | msgpack.ExtType | None) -> str | None:
+    if not isinstance(value, msgpack.ExtType):
+        return value
+    try:
+        return value.data.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"msgpack-ext-{value.code}:{value.data.hex()}"
+
+
 def seller_fee(sell_price: float, cfg: Config) -> float:
     return cfg.fee_high if sell_price >= cfg.fee_high_from else cfg.fee
 
@@ -106,7 +117,8 @@ def check(sale: dict, book: PriceBook, cfg: Config) -> tuple[Signal | None, str]
     if sale.get("saleId"):
         url += f"/{sale['saleId']}"
     signal = Signal(str(uid), name, key[1], price, stats.fair, profit, roi,
-                    stats.volume_7d, cfg.currency, sale.get("wear"), sale.get("lock"), url)
+                    stats.volume_7d, cfg.currency, sale.get("wear"),
+                    _normalize_lock(sale.get("lock")), url)
     return signal, "подошли"
 
 
