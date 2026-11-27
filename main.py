@@ -70,11 +70,13 @@ def handle_event(event: dict, book: PriceBook, journal: Journal, notifier: Notif
                 result = check(sale, book, admin_cfg)[1]
                 if result == "подошли":
                     result = "подошли, но сигналы на паузе"
-            if found and journal.add(found):
+            if found:
+                is_new_signal = journal.add(found)
                 for user_id, signal in matches:
-                    notifier.push(user_id, signal)
-            elif found:
-                result = "повторы"
+                    if journal.add_delivery(user_id, signal):
+                        notifier.push(user_id, signal)
+                if not is_new_signal:
+                    result = "повторы"
             stats.add(result)
         except Exception:
             stats.add("ошибка обработки")

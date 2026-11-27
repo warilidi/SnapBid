@@ -149,18 +149,41 @@ def test_personal_filters_delivery_and_dedup():
         await asyncio.sleep(0.05)
         assert [c for c, _ in session.sent] == [ADMIN]
         session.sent.clear()
+
+        access.set_roi(GUEST, 0.10)
+        handle_event({"eventType": "listed", "sales": [sale()]},
+                     prices, journal, notifier, access, CFG, stats)
+        await asyncio.sleep(0.05)
+        assert [c for c, _ in session.sent] == [GUEST]
+        assert journal.db.execute(
+            "SELECT COUNT(*) FROM signal_deliveries WHERE user_id = ?", (ADMIN,)
+        ).fetchone()[0] == 1
+        assert journal.db.execute(
+            "SELECT COUNT(*) FROM signal_deliveries WHERE user_id = ?", (GUEST,)
+        ).fetchone()[0] == 1
+        session.sent.clear()
+
+        access.set_roi(GUEST, 0.60)
         handle_event({"eventType": "listed", "sales": [sale(saleId=2, salePrice=6000)]},
                      prices, journal, notifier, access, CFG, stats)
         await asyncio.sleep(0.05)
-        assert sorted(c for c, _ in session.sent) == [GUEST, ADMIN]
+        assert [c for c, _ in session.sent] == [ADMIN]
         session.sent.clear()
+
+        access.set_roi(GUEST, 0.30)
+        handle_event({"eventType": "listed", "sales": [sale(saleId=2, salePrice=6000)]},
+                     prices, journal, notifier, access, CFG, stats)
+        await asyncio.sleep(0.05)
+        assert [c for c, _ in session.sent] == [GUEST]
+        session.sent.clear()
+
         prices.updated_at = 0
         handle_event({"eventType": "listed", "sales": [sale(saleId=3)]},
                      prices, journal, notifier, access, CFG, stats)
         await asyncio.sleep(0.05)
         assert session.sent == []
-        assert stats.lots == 4 and stats.results["подошли"] == 2
-        assert stats.results["повторы"] == 1
+        assert stats.lots == 6 and stats.results["подошли"] == 2
+        assert stats.results["повторы"] == 3
         assert stats.results["цены ещё не загружены или устарели"] == 1
         await notifier.close()
     asyncio.run(run())

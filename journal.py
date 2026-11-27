@@ -19,6 +19,10 @@ class Journal:
                 wear REAL, lock TEXT, url TEXT, created REAL,
                 later_median REAL, later_roi REAL, checked REAL,
                 PRIMARY KEY (uid, price))""")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS signal_deliveries (
+                user_id INTEGER, uid TEXT, price REAL,
+                PRIMARY KEY (user_id, uid, price))""")
         self.db.commit()
 
     def add(self, s: Signal, now: float | None = None) -> bool:
@@ -29,6 +33,14 @@ class Journal:
         with self.db:
             cur = self.db.execute(
                 f"INSERT OR IGNORE INTO signals ({cols}) VALUES ({marks})", row)
+        return cur.rowcount == 1
+
+    def add_delivery(self, user_id: int, s: Signal) -> bool:
+        """Claim this signal for one user without deduplicating other users."""
+        with self.db:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO signal_deliveries VALUES (?, ?, ?)",
+                (user_id, s.uid, s.price))
         return cur.rowcount == 1
 
     def check_outcomes(self, book: PriceBook, cfg: Config, now: float | None = None) -> int:
