@@ -27,7 +27,9 @@ class Journal:
 
     def add(self, s: Signal, now: float | None = None) -> bool:
         """False, если этот лот по этой цене уже был."""
-        row = asdict(s) | {"created": now or time.time()}
+        row = asdict(s)
+        row.pop("specific_listing_url")
+        row["created"] = now or time.time()
         cols = ", ".join(row)
         marks = ", ".join(f":{c}" for c in row)
         with self.db:

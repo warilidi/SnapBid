@@ -1,9 +1,10 @@
+import asyncio
 import msgpack
 import pytest
 
 from config import Config
 from journal import HOLD, Journal
-from notifier import render
+from notifier import Notifier, render
 from pricing import PriceBook, evaluate
 
 CFG = Config()
@@ -33,6 +34,7 @@ def test_profit_uses_lower_median_and_fee():
     assert s.profit == pytest.approx(12)
     assert s.roi == pytest.approx(0.15)
     assert s.url == "https://skinport.com/item/ak-test/42"
+    assert s.specific_listing_url
 
 
 def test_high_value_fee():
@@ -95,3 +97,20 @@ def test_render_only_shows_valid_trade_lock_date():
 
     assert "Trade lock до: 2026-11-27" in render(valid)
     assert "Trade lock до:" not in render(invalid)
+
+
+def test_missing_sale_id_is_labeled_as_product_page():
+    signal = evaluate(sale(saleId=None, assetId=43), book(), CFG)
+
+    class CaptureBot:
+        async def send_message(self, *args, **kwargs):
+            self.reply_markup = kwargs["reply_markup"]
+
+    bot = CaptureBot()
+    asyncio.run(Notifier(bot, None).send(1, signal))
+    button = bot.reply_markup.inline_keyboard[0][0]
+
+    assert signal.url == "https://skinport.com/item/ak-test"
+    assert button.text == "Открыть страницу товара"
+    assert not signal.specific_listing_url
+    assert "текущие предложения могут отличаться" in render(signal)

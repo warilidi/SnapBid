@@ -70,6 +70,7 @@ class Signal:
     wear: float | None
     lock: str | None
     url: str
+    specific_listing_url: bool
 
 
 def _normalize_lock(value: str | msgpack.ExtType | None) -> str | None:
@@ -118,7 +119,7 @@ def check(sale: dict, book: PriceBook, cfg: Config) -> tuple[Signal | None, str]
         url += f"/{sale['saleId']}"
     signal = Signal(str(uid), name, key[1], price, stats.fair, profit, roi,
                     stats.volume_7d, cfg.currency, sale.get("wear"),
-                    _normalize_lock(sale.get("lock")), url)
+                    _normalize_lock(sale.get("lock")), url, bool(sale.get("saleId")))
     return signal, "подошли"
 
 

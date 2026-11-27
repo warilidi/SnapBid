@@ -17,10 +17,15 @@ def render(s: Signal) -> str:
     title = s.name + (f" [{s.version}]" if s.version else "")
     lines = [
         f"<b>{html.escape(title)}</b>",
-        f"Цена: <b>{s.price:.2f} {s.currency}</b>",
+        f"Цена в событии размещения: <b>{s.price:.2f} {s.currency}</b>",
         f"Медиана продаж: {s.fair:.2f} {s.currency} (за 7 дней продаж: {s.volume_7d})",
         f"Расчётная прибыль после комиссии: {s.profit:.2f} {s.currency} ({s.roi:.1%})",
     ]
+    if not s.specific_listing_url:
+        lines.append(
+            "<i>Ссылка ведёт на страницу товара, не конкретный лот; "
+            "текущие предложения могут отличаться.</i>"
+        )
     if s.wear is not None:
         lines.append(f"Float: {s.wear:.4f}")
     if isinstance(s.lock, str):
@@ -51,8 +56,9 @@ class Notifier:
             self.workers[user_id] = asyncio.create_task(self._run(user_id, queue))
 
     async def send(self, user_id: int, s: Signal) -> None:
+        label = "Открыть лот" if s.specific_listing_url else "Открыть страницу товара"
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Открыть лот", url=s.url)]])
+            inline_keyboard=[[InlineKeyboardButton(text=label, url=s.url)]])
         await self.bot.send_message(
             user_id, render(s), parse_mode="HTML", reply_markup=keyboard)
 
