@@ -1,4 +1,6 @@
 import asyncio
+import sqlite3
+
 import msgpack
 import pytest
 
@@ -19,7 +21,8 @@ def history(m7=100.0, m30=105.0, v7=10, v30=40, version=None):
 def sale(**kw):
     return {"saleStatus": "listed", "saleType": "public", "currency": "EUR",
             "salePrice": 8000, "marketHashName": "AK <Test>", "version": "default",
-            "saleId": 42, "url": "ak-test", "wear": 0.12, "lock": None} | kw
+            "saleId": 42, "assetId": 55034907, "assetid": "24958657824",
+            "url": "ak-test", "wear": 0.12, "lock": None} | kw
 
 
 def book(**kw):
@@ -34,7 +37,8 @@ def test_profit_uses_lower_median_and_fee():
     assert s.profit == pytest.approx(12)
     assert s.roi == pytest.approx(0.15)
     assert s.url == "https://skinport.com/item/ak-test/42"
-    assert s.specific_listing_url
+    assert s.sale_id == "42"
+    assert s.asset_id == "24958657824"
 
 
 def test_high_value_fee():
@@ -67,11 +71,35 @@ def test_null_median_skipped_and_empty_keeps_old():
 def test_journal_dedup_and_outcome():
     j, s = Journal(":memory:"), evaluate(sale(), book(), CFG)
     assert j.add(s, now=1000)
+    assert j.db.execute(
+        "SELECT sale_id, asset_id, url FROM signals"
+    ).fetchone() == ("42", "24958657824", "https://skinport.com/item/ak-test/42")
     assert not j.add(s, now=1001)
     assert j.check_outcomes(book(m7=80), CFG, now=1000 + HOLD - 1) == 0
     assert j.check_outcomes(book(m7=80), CFG, now=1000 + HOLD) == 1
     roi = j.db.execute("SELECT later_roi FROM signals").fetchone()[0]
     assert roi == pytest.approx((80 * 0.92 - 80) / 80)
+
+
+def test_journal_migrates_existing_signals_table(tmp_path):
+    path = tmp_path / "signals.db"
+    db = sqlite3.connect(path)
+    db.execute("""
+        CREATE TABLE signals (
+            uid TEXT, price REAL, name TEXT, version TEXT, fair REAL,
+            profit REAL, roi REAL, volume_7d INTEGER, currency TEXT,
+            wear REAL, lock TEXT, url TEXT, created REAL,
+            later_median REAL, later_roi REAL, checked REAL,
+            PRIMARY KEY (uid, price))
+    """)
+    db.close()
+
+    journal = Journal(str(path))
+    signal = evaluate(sale(), book(), CFG)
+    assert journal.add(signal)
+    assert journal.db.execute(
+        "SELECT sale_id, asset_id FROM signals"
+    ).fetchone() == ("42", "24958657824")
 
 
 @pytest.mark.parametrize(("lock", "expected"), [
@@ -99,8 +127,18 @@ def test_render_only_shows_valid_trade_lock_date():
     assert "Trade lock до:" not in render(invalid)
 
 
-def test_missing_sale_id_is_labeled_as_product_page():
-    signal = evaluate(sale(saleId=None, assetId=43), book(), CFG)
+@pytest.mark.parametrize(
+    ("changes", "expected_uid", "expected_sale_id", "expected_asset_id", "expected_url"),
+    [
+        ({}, "42", "42", "24958657824", "https://skinport.com/item/ak-test/42"),
+        ({"saleId": None}, "24958657824", None, "24958657824",
+         "https://skinport.com/a/24958657824"),
+    ],
+)
+def test_inline_button_keeps_concrete_listing_id(
+    changes, expected_uid, expected_sale_id, expected_asset_id, expected_url
+):
+    signal = evaluate(sale(**changes), book(), CFG)
 
     class CaptureBot:
         async def send_message(self, *args, **kwargs):
@@ -109,8 +147,22 @@ def test_missing_sale_id_is_labeled_as_product_page():
     bot = CaptureBot()
     asyncio.run(Notifier(bot, None).send(1, signal))
     button = bot.reply_markup.inline_keyboard[0][0]
+    journal = Journal(":memory:")
+    assert journal.add(signal)
 
-    assert signal.url == "https://skinport.com/item/ak-test"
-    assert button.text == "Открыть страницу товара"
-    assert not signal.specific_listing_url
-    assert "текущие предложения могут отличаться" in render(signal)
+    assert signal.uid == expected_uid
+    assert signal.sale_id == expected_sale_id
+    assert signal.asset_id == expected_asset_id
+    assert signal.url == expected_url
+    assert journal.db.execute(
+        "SELECT uid, sale_id, asset_id, url FROM signals"
+    ).fetchone() == (
+        expected_uid, expected_sale_id, expected_asset_id, expected_url
+    )
+    assert button.text == "Открыть лот"
+    assert button.url == expected_url
+
+
+def test_missing_listing_ids_do_not_generate_generic_url():
+    signal = evaluate(sale(saleId=None, assetid=None), book(), CFG)
+    assert signal is None

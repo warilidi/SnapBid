@@ -16,20 +16,23 @@ class Journal:
             CREATE TABLE IF NOT EXISTS signals (
                 uid TEXT, price REAL, name TEXT, version TEXT, fair REAL,
                 profit REAL, roi REAL, volume_7d INTEGER, currency TEXT,
-                wear REAL, lock TEXT, url TEXT, created REAL,
+                wear REAL, lock TEXT, sale_id TEXT, asset_id TEXT,
+                url TEXT, created REAL,
                 later_median REAL, later_roi REAL, checked REAL,
                 PRIMARY KEY (uid, price))""")
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS signal_deliveries (
                 user_id INTEGER, uid TEXT, price REAL,
                 PRIMARY KEY (user_id, uid, price))""")
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(signals)")}
+        for column in ("sale_id", "asset_id"):
+            if column not in columns:
+                self.db.execute(f"ALTER TABLE signals ADD COLUMN {column} TEXT")
         self.db.commit()
 
     def add(self, s: Signal, now: float | None = None) -> bool:
         """False, если этот лот по этой цене уже был."""
-        row = asdict(s)
-        row.pop("specific_listing_url")
-        row["created"] = now or time.time()
+        row = asdict(s) | {"created": now or time.time()}
         cols = ", ".join(row)
         marks = ", ".join(f":{c}" for c in row)
         with self.db:

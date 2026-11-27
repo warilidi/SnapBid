@@ -69,8 +69,19 @@ class Signal:
     currency: str
     wear: float | None
     lock: str | None
+    sale_id: str | None
+    asset_id: str | None
     url: str
-    specific_listing_url: bool
+
+
+def _numeric_id(value: object) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return str(value)
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return value
+    return None
 
 
 def _normalize_lock(value: str | msgpack.ExtType | None) -> str | None:
@@ -98,7 +109,9 @@ def check(sale: dict, book: PriceBook, cfg: Config) -> tuple[Signal | None, str]
         return None, "другая валюта"
     cents = sale.get("salePrice")
     name = sale.get("marketHashName")
-    uid = sale.get("saleId") or sale.get("assetId")
+    sale_id = _numeric_id(sale.get("saleId"))
+    asset_id = _numeric_id(sale.get("assetid"))
+    uid = sale_id or asset_id
     if not cents or not name or not uid:
         return None, "неполные данные"
     price = cents / 100  # фид отдаёт цены в центах, история — в единицах
@@ -114,12 +127,29 @@ def check(sale: dict, book: PriceBook, cfg: Config) -> tuple[Signal | None, str]
     roi = profit / price
     if profit < cfg.min_profit or roi < cfg.min_roi:
         return None, "прибыль ниже порога"
-    url = f"https://skinport.com/item/{sale.get('url', '')}"
-    if sale.get("saleId"):
-        url += f"/{sale['saleId']}"
-    signal = Signal(str(uid), name, key[1], price, stats.fair, profit, roi,
-                    stats.volume_7d, cfg.currency, sale.get("wear"),
-                    _normalize_lock(sale.get("lock")), url, bool(sale.get("saleId")))
+    slug = sale.get("url")
+    if sale_id and isinstance(slug, str) and slug:
+        url = f"https://skinport.com/item/{slug}/{sale_id}"
+    elif asset_id:
+        url = f"https://skinport.com/a/{asset_id}"
+    else:
+        return None, "неполные данные"
+    signal = Signal(
+        uid=str(uid),
+        name=name,
+        version=key[1],
+        price=price,
+        fair=stats.fair,
+        profit=profit,
+        roi=roi,
+        volume_7d=stats.volume_7d,
+        currency=cfg.currency,
+        wear=sale.get("wear"),
+        lock=_normalize_lock(sale.get("lock")),
+        sale_id=sale_id,
+        asset_id=asset_id,
+        url=url,
+    )
     return signal, "подошли"
 
 
