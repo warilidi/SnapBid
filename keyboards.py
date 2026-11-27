@@ -26,7 +26,21 @@ def settings_menu(paused: bool) -> InlineKeyboardMarkup:
     label = "Включить сигналы" if paused else "Поставить на паузу"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=label, callback_data=f"settings:{action}")],
+        [InlineKeyboardButton(text="Площадки и фильтры", callback_data="markets:open")],
         [InlineKeyboardButton(text="В главное меню", callback_data="menu:home")],
+    ])
+
+
+def marketplaces_menu(skinport_enabled: bool, dmarket_enabled: bool) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"Skinport: {'вкл' if skinport_enabled else 'выкл'}",
+            callback_data="markets:toggle:skinport")],
+        [InlineKeyboardButton(
+            text=f"DMarket: {'вкл' if dmarket_enabled else 'выкл'}",
+            callback_data="markets:toggle:dmarket")],
+        [InlineKeyboardButton(text="Фильтры DMarket", callback_data="markets:filters:dmarket")],
+        [InlineKeyboardButton(text="Назад к настройкам", callback_data="menu:settings")],
     ])
 
 

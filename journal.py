@@ -24,6 +24,17 @@ class Journal:
             CREATE TABLE IF NOT EXISTS signal_deliveries (
                 user_id INTEGER, uid TEXT, price REAL,
                 PRIMARY KEY (user_id, uid, price))""")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS market_signals (
+                provider TEXT, listing_id TEXT, price REAL, created REAL,
+                PRIMARY KEY (provider, listing_id, price))""")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS market_deliveries (
+                user_id INTEGER, provider TEXT, listing_id TEXT, price REAL,
+                PRIMARY KEY (user_id, provider, listing_id, price))""")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS market_provider_state (
+                provider TEXT PRIMARY KEY, baseline_completed INTEGER NOT NULL DEFAULT 0)""")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(signals)")}
         for column in ("sale_id", "asset_id"):
             if column not in columns:
@@ -54,6 +65,43 @@ class Journal:
                 cur = self.db.execute(
                     "INSERT OR IGNORE INTO signal_deliveries VALUES (?, ?, ?)",
                     (user_id, signal.uid, signal.price))
+                if cur.rowcount == 1:
+                    claimed.append(user_id)
+        return claimed
+
+    def add_market_signal(
+        self, provider: str, listing_id: str, price: float, now: float | None = None
+    ) -> bool:
+        with self.db:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO market_signals VALUES (?, ?, ?, ?)",
+                (provider, listing_id, price, now if now is not None else time.time()))
+        return cur.rowcount == 1
+
+    def market_baseline_completed(self, provider: str) -> bool:
+        row = self.db.execute(
+            "SELECT baseline_completed FROM market_provider_state WHERE provider = ?",
+            (provider,)).fetchone()
+        return bool(row and row[0])
+
+    def complete_market_baseline(self, provider: str) -> None:
+        with self.db:
+            self.db.execute(
+                "INSERT INTO market_provider_state (provider, baseline_completed) "
+                "VALUES (?, 1) ON CONFLICT(provider) DO UPDATE "
+                "SET baseline_completed = 1", (provider,))
+
+    def add_market_deliveries(
+        self, provider: str, listing_id: str, price: float, user_ids: list[int]
+    ) -> list[int]:
+        claimed = []
+        if not user_ids:
+            return claimed
+        with self.db:
+            for user_id in user_ids:
+                cur = self.db.execute(
+                    "INSERT OR IGNORE INTO market_deliveries VALUES (?, ?, ?, ?)",
+                    (user_id, provider, listing_id, price))
                 if cur.rowcount == 1:
                     claimed.append(user_id)
         return claimed

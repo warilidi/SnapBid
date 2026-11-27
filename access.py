@@ -1,10 +1,13 @@
 """Кто имеет доступ к боту и с какими фильтрами."""
+import math
 import secrets
 import sqlite3
 import time
 from dataclasses import dataclass, replace
 
 from config import Config
+
+SUPPORTED_MARKETPLACES = ("skinport", "dmarket")
 
 
 @dataclass(frozen=True)
@@ -22,9 +25,21 @@ class User:
                        max_price=self.max_price)
 
 
+@dataclass(frozen=True)
+class MarketSettings:
+    provider: str
+    enabled: bool
+    min_price: float
+    max_price: float
+    min_roi: float | None = None
+    min_float: float | None = None
+    max_float: float | None = None
+
+
 class Access:
     def __init__(self, db: sqlite3.Connection, cfg: Config) -> None:
         self.db, self.cfg = db, cfg
+        db.execute("PRAGMA foreign_keys = ON")
         with db:
             db.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, name TEXT, min_roi REAL,
@@ -35,6 +50,25 @@ class Access:
             columns = [r[1] for r in db.execute("PRAGMA table_info(users)")]
             if "expires_at" not in columns:  # база от прошлой версии
                 db.execute("ALTER TABLE users ADD COLUMN expires_at REAL")
+            db.execute("""CREATE TABLE IF NOT EXISTS user_market_settings (
+                user_id INTEGER NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                min_roi REAL,
+                min_price REAL NOT NULL,
+                max_price REAL NOT NULL,
+                min_float REAL,
+                max_float REAL,
+                PRIMARY KEY (user_id, provider))""")
+            db.execute(
+                "INSERT OR IGNORE INTO user_market_settings "
+                "(user_id, provider, enabled, min_roi, min_price, max_price) "
+                "SELECT user_id, 'skinport', 1, min_roi, min_price, max_price FROM users")
+            db.execute(
+                "INSERT OR IGNORE INTO user_market_settings "
+                "(user_id, provider, enabled, min_price, max_price) "
+                "SELECT user_id, 'dmarket', 0, ?, ? FROM users",
+                (cfg.min_price, cfg.max_price))
             self._add_user(cfg.admin_id, "admin")
 
     def _add_user(self, user_id: int, name: str) -> None:
@@ -43,6 +77,16 @@ class Access:
             "INSERT OR IGNORE INTO users (user_id, name, min_roi, min_price, max_price) "
             "VALUES (?, ?, ?, ?, ?)",
             (user_id, name, c.min_roi, c.min_price, c.max_price))
+        self.db.execute(
+            "INSERT OR IGNORE INTO user_market_settings "
+            "(user_id, provider, enabled, min_roi, min_price, max_price) "
+            "VALUES (?, 'skinport', 1, ?, ?, ?)",
+            (user_id, c.min_roi, c.min_price, c.max_price))
+        self.db.execute(
+            "INSERT OR IGNORE INTO user_market_settings "
+            "(user_id, provider, enabled, min_price, max_price) "
+            "VALUES (?, 'dmarket', 0, ?, ?)",
+            (user_id, c.min_price, c.max_price))
 
     def is_admin(self, user_id: int) -> bool:
         return user_id == self.cfg.admin_id
@@ -117,12 +161,66 @@ class Access:
     def set_roi(self, user_id: int, roi: float) -> None:
         with self.db:
             self.db.execute("UPDATE users SET min_roi = ? WHERE user_id = ?", (roi, user_id))
+            self.db.execute(
+                "UPDATE user_market_settings SET min_roi = ? "
+                "WHERE user_id = ? AND provider = 'skinport'", (roi, user_id))
 
     def set_price(self, user_id: int, low: float, high: float) -> None:
         with self.db:
             self.db.execute(
                 "UPDATE users SET min_price = ?, max_price = ? WHERE user_id = ?",
                 (low, high, user_id))
+            self.db.execute(
+                "UPDATE user_market_settings SET min_price = ?, max_price = ? "
+                "WHERE user_id = ? AND provider = 'skinport'", (low, high, user_id))
+
+    @staticmethod
+    def _check_provider(provider: str) -> None:
+        if provider not in SUPPORTED_MARKETPLACES:
+            raise ValueError("Unsupported marketplace")
+
+    def market_settings(self, user_id: int, provider: str) -> MarketSettings | None:
+        self._check_provider(provider)
+        row = self.db.execute(
+            "SELECT enabled, min_price, max_price, min_roi, min_float, max_float "
+            "FROM user_market_settings WHERE user_id = ? AND provider = ?",
+            (user_id, provider)).fetchone()
+        return MarketSettings(provider, bool(row[0]), row[1], row[2], row[3], row[4], row[5]) \
+            if row else None
+
+    def set_market_enabled(self, user_id: int, provider: str, enabled: bool) -> None:
+        self._check_provider(provider)
+        if enabled and provider == "dmarket" and not (
+                self.cfg.dmarket_api_key and self.cfg.dmarket_secret_key):
+            raise ValueError(
+                "DMarket не подключён: задайте DMARKET_API_KEY и DMARKET_SECRET_KEY.")
+        with self.db:
+            self.db.execute(
+                "UPDATE user_market_settings SET enabled = ? "
+                "WHERE user_id = ? AND provider = ?",
+                (int(enabled), user_id, provider))
+
+    def set_market_price(self, user_id: int, provider: str, low: float, high: float) -> None:
+        self._check_provider(provider)
+        if not math.isfinite(low) or not math.isfinite(high) or low < 0 or low >= high:
+            raise ValueError("Invalid marketplace price range")
+        with self.db:
+            self.db.execute(
+                "UPDATE user_market_settings SET min_price = ?, max_price = ? "
+                "WHERE user_id = ? AND provider = ?",
+                (low, high, user_id, provider))
+
+    def set_market_float(self, user_id: int, provider: str,
+                         low: float, high: float) -> None:
+        self._check_provider(provider)
+        if (provider != "dmarket" or not math.isfinite(low) or not math.isfinite(high)
+                or low < 0 or high > 1 or low >= high):
+            raise ValueError("Invalid marketplace float range")
+        with self.db:
+            self.db.execute(
+                "UPDATE user_market_settings SET min_float = ?, max_float = ? "
+                "WHERE user_id = ? AND provider = ?",
+                (low, high, user_id, provider))
 
     def set_paused(self, user_id: int, paused: bool) -> None:
         with self.db:

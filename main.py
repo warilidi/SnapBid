@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 
 import aiohttp
 import socketio
@@ -8,9 +9,10 @@ from aiogram import Bot, Dispatcher
 from access import Access
 from billing import Billing, CryptoPay
 from config import Config
+from dmarket import DMarketClient, DMarketListing
 from handlers import build_router
 from journal import Journal
-from notifier import Notifier
+from notifier import MarketplaceSignal, Notifier
 from pricing import PriceBook, check, evaluate
 from stars import Stars, build_stars_router
 from stats import Stats
@@ -48,7 +50,10 @@ def handle_event(event: dict, book: PriceBook, journal: Journal, notifier: Notif
     if event.get("eventType") != "listed":
         return
     fresh = book.is_fresh()
-    users = [u for u in access.users() if not u.paused]
+    users = [u for u in access.users()
+             if not u.paused
+             and (settings := access.market_settings(u.user_id, "skinport"))
+             and settings.enabled]
     # Причины отсева считаем по фильтрам администратора
     admin = access.get(cfg.admin_id)
     admin_cfg = admin.apply(cfg) if admin else cfg
@@ -82,6 +87,85 @@ def handle_event(event: dict, book: PriceBook, journal: Journal, notifier: Notif
         except Exception:
             stats.add("ошибка обработки")
             log.exception("Ошибка обработки лота")
+
+
+def handle_dmarket_listing(
+    listing: DMarketListing, journal: Journal, notifier: Notifier,
+    access: Access, stats: Stats,
+) -> None:
+    if not journal.add_market_signal("dmarket", listing.item_id, listing.price):
+        stats.add("DMarket: повтор")
+        return
+    matches = []
+    for user in access.users():
+        if user.paused:
+            continue
+        settings = access.market_settings(user.user_id, "dmarket")
+        if settings is None or not settings.enabled:
+            continue
+        if not settings.min_price <= listing.price <= settings.max_price:
+            continue
+        if settings.min_float is not None or settings.max_float is not None:
+            if listing.float_value is None:
+                continue
+            if settings.min_float is not None and listing.float_value < settings.min_float:
+                continue
+            if settings.max_float is not None and listing.float_value > settings.max_float:
+                continue
+        matches.append(user.user_id)
+
+    signal = MarketplaceSignal(
+        provider="DMarket",
+        listing_id=listing.item_id,
+        name=listing.title,
+        price=listing.price,
+        currency="USD",
+        wear=listing.float_value,
+    )
+    claimed_users = set(journal.add_market_deliveries(
+        "dmarket", listing.item_id, listing.price, matches))
+    for user_id in claimed_users:
+        notifier.push(user_id, signal)
+    stats.add("DMarket: подошёл" if claimed_users else "DMarket: нет получателей")
+
+
+async def monitor_dmarket(
+    client: DMarketClient, journal: Journal, notifier: Notifier,
+    access: Access, stats: Stats,
+) -> None:
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            started = asyncio.get_running_loop().time()
+            users = [
+                user for user in access.users()
+                if not user.paused
+                and (settings := access.market_settings(user.user_id, "dmarket"))
+                and settings.enabled
+            ]
+            if not users:
+                await asyncio.sleep(5)
+                continue
+            low = min(access.market_settings(u.user_id, "dmarket").min_price for u in users)
+            high = max(access.market_settings(u.user_id, "dmarket").max_price for u in users)
+            initialized = journal.market_baseline_completed("dmarket")
+            try:
+                async for listing in client.listings(
+                        session, math.floor(low * 100), math.ceil(high * 100)):
+                    if initialized:
+                        handle_dmarket_listing(listing, journal, notifier, access, stats)
+                    else:
+                        journal.add_market_signal("dmarket", listing.item_id, listing.price)
+                if not initialized:
+                    journal.complete_market_baseline("dmarket")
+                elapsed = asyncio.get_running_loop().time() - started
+                await asyncio.sleep(max(0, 60 - elapsed))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                stats.add("DMarket: ошибка API")
+                log.exception("DMarket scan failed")
+                await asyncio.sleep(60)
 
 
 async def log_stats(stats: Stats) -> None:
@@ -120,18 +204,33 @@ async def listen(book: PriceBook, journal: Journal, notifier: Notifier,
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
+    stats = Stats()
     cfg = Config.from_env()
     if not cfg.token or cfg.admin_id <= 0:
         raise SystemExit("Заполните TELEGRAM_BOT_TOKEN и ADMIN_ID в файле .env")
     book, journal = PriceBook(), Journal(cfg.db_path)
     access = Access(journal.db, cfg)
+    dmarket_client = None
+    if cfg.dmarket_api_key and cfg.dmarket_secret_key:
+        try:
+            dmarket_client = DMarketClient(cfg.dmarket_api_key, cfg.dmarket_secret_key)
+        except ValueError as exc:
+            log.error("DMarket monitoring disabled: %s", exc)
+    elif cfg.dmarket_api_key or cfg.dmarket_secret_key:
+        log.warning("DMarket monitoring disabled: both API credentials are required")
+    elif any(
+        (settings := access.market_settings(user.user_id, "dmarket"))
+        and settings.enabled for user in access.users()
+    ):
+        log.warning(
+            "DMarket is selected by a user but monitoring is disabled: "
+            "set DMARKET_API_KEY and DMARKET_SECRET_KEY")
     bot = Bot(cfg.token)
     notifier = Notifier(bot, access)
     dispatcher = Dispatcher()
     billing = None
     if cfg.crypto_token:
         billing = Billing(access, CryptoPay(cfg.crypto_token, cfg.crypto_url), cfg)
-    stats = Stats()
     stars = Stars(access) if cfg.stars_price > 0 else None
     if stars:  # этот роутер должен стоять первым
         dispatcher.include_router(build_stars_router(stars, billing is not None))
@@ -144,6 +243,9 @@ async def main() -> None:
             tasks.create_task(log_stats(stats))
             if billing:
                 tasks.create_task(billing.run(bot))
+            if dmarket_client:
+                tasks.create_task(monitor_dmarket(
+                    dmarket_client, journal, notifier, access, stats))
     finally:
         await notifier.close()
         await bot.session.close()

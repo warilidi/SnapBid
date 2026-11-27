@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -46,13 +47,13 @@ class FakeSession(BaseSession):
         pass
 
 
-def setup(cfg=CFG):
+def setup(cfg=CFG, stats=None):
     journal = Journal(":memory:")
     access = Access(journal.db, cfg)
     session = FakeSession()
     bot = Bot("1:test", session=session)
     dp = Dispatcher()
-    dp.include_router(build_router(access))
+    dp.include_router(build_router(access, stats=stats))
 
     async def say(uid, text, chat_type="private"):
         session.sent.clear()
@@ -133,6 +134,99 @@ def test_settings_commands():
             await say(ADMIN, bad)
         assert access.get(ADMIN) == u
         assert "12.5%" in (await say(ADMIN, "/settings"))[0][1]
+    asyncio.run(run())
+
+
+def test_marketplace_settings_migrate_and_remain_per_user():
+    cfg = Config(admin_id=ADMIN, dmarket_api_key="configured",
+                 dmarket_secret_key="configured")
+    _, access, *_ = setup(cfg)
+    assert access.redeem(access.create_invite(), GUEST, "guest")
+
+    assert access.market_settings(ADMIN, "skinport").enabled
+    assert access.market_settings(GUEST, "skinport").enabled
+    assert not access.market_settings(ADMIN, "dmarket").enabled
+    assert not access.market_settings(GUEST, "dmarket").enabled
+
+    access.set_market_enabled(ADMIN, "dmarket", True)
+    access.set_market_price(ADMIN, "dmarket", 20, 40)
+    access.set_market_float(ADMIN, "dmarket", 0.1, 0.2)
+    access.set_roi(ADMIN, 0.25)
+    access.set_price(ADMIN, 10, 100)
+
+    assert access.market_settings(ADMIN, "dmarket").enabled
+    assert (access.market_settings(ADMIN, "dmarket").min_price,
+            access.market_settings(ADMIN, "dmarket").max_price,
+            access.market_settings(ADMIN, "dmarket").min_float,
+            access.market_settings(ADMIN, "dmarket").max_float) == (20, 40, 0.1, 0.2)
+    assert not access.market_settings(GUEST, "dmarket").enabled
+    assert (access.market_settings(GUEST, "dmarket").min_price,
+            access.market_settings(GUEST, "dmarket").max_price) == (5, 300)
+    assert (access.market_settings(ADMIN, "skinport").min_roi,
+            access.market_settings(ADMIN, "skinport").min_price,
+            access.market_settings(ADMIN, "skinport").max_price) == (0.25, 10, 100)
+
+
+def test_existing_skinport_user_filters_are_preserved_by_market_migration():
+    db = sqlite3.connect(":memory:")
+    db.execute("""CREATE TABLE users (
+        user_id INTEGER PRIMARY KEY, name TEXT, min_roi REAL,
+        min_price REAL, max_price REAL, paused INTEGER DEFAULT 0)""")
+    db.execute(
+        "INSERT INTO users (user_id, name, min_roi, min_price, max_price) "
+        "VALUES (?, 'admin', 0.27, 11, 77)", (ADMIN,))
+
+    access = Access(db, Config(admin_id=ADMIN))
+    settings = access.market_settings(ADMIN, "skinport")
+    assert settings.enabled
+    assert (settings.min_roi, settings.min_price, settings.max_price) == (0.27, 11, 77)
+
+
+def test_marketplace_inline_controls_and_dmarket_filters():
+    async def run():
+        cfg = Config(admin_id=ADMIN, dmarket_api_key="configured",
+                     dmarket_secret_key="configured")
+        _, access, _, session, say, tap = setup(cfg)
+        assert access.redeem(access.create_invite(), GUEST, "guest")
+
+        await tap(GUEST, "markets:open")
+        assert "Skinport: включён" in session.sent[-1][1]
+        assert any(
+            button.callback_data == "markets:toggle:dmarket"
+            for row in session.markups[-1].inline_keyboard for button in row)
+
+        await tap(GUEST, "markets:toggle:dmarket")
+        assert access.market_settings(GUEST, "dmarket").enabled
+        await say(GUEST, "/dmarket_price 12 50")
+        await say(GUEST, "/dmarket_float 0.1 0.2")
+        settings = access.market_settings(GUEST, "dmarket")
+        assert (settings.min_price, settings.max_price) == (12, 50)
+        assert (settings.min_float, settings.max_float) == (0.1, 0.2)
+        for invalid in ("/dmarket_price 20 10", "/dmarket_float 0.5 1.1"):
+            await say(GUEST, invalid)
+        assert access.market_settings(GUEST, "dmarket") == settings
+
+    asyncio.run(run())
+
+
+def test_marketplace_callback_explains_missing_credentials():
+    async def run():
+        _, access, _, session, _, tap = setup()
+        await tap(ADMIN, "markets:toggle:dmarket")
+        assert "DMARKET_API_KEY" in session.answers[-1]
+        assert not access.market_settings(ADMIN, "dmarket").enabled
+
+    asyncio.run(run())
+
+
+def test_status_command_includes_process_uptime():
+    async def run():
+        stats = Stats()
+        _, _, _, _, say, _ = setup(stats=stats)
+        response = await say(ADMIN, "/status")
+        assert "Время работы процесса:" in response[0][1]
+        assert "Лотов получено с запуска: 0" in response[0][1]
+
     asyncio.run(run())
 
 

@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -38,6 +38,8 @@ class Config:
     fee_high: float = 0.06
     fee_high_from: float = 1000.0
     db_path: str = "signals.db"
+    dmarket_api_key: str = field(default="", repr=False)
+    dmarket_secret_key: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -65,4 +67,6 @@ class Config:
             fee_high=float(env("FEE_HIGH", d.fee_high)),
             fee_high_from=float(env("FEE_HIGH_FROM", d.fee_high_from)),
             db_path=env("DB_PATH", d.db_path),
+            dmarket_api_key=env("DMARKET_API_KEY", ""),
+            dmarket_secret_key=env("DMARKET_SECRET_KEY", ""),
         )
