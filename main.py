@@ -72,8 +72,9 @@ def handle_event(event: dict, book: PriceBook, journal: Journal, notifier: Notif
                     result = "подошли, но сигналы на паузе"
             if found:
                 is_new_signal = journal.add(found)
+                claimed_users = set(journal.add_deliveries(matches))
                 for user_id, signal in matches:
-                    if journal.add_delivery(user_id, signal):
+                    if user_id in claimed_users:
                         notifier.push(user_id, signal)
                 if not is_new_signal:
                     result = "повторы"

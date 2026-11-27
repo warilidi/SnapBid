@@ -81,6 +81,16 @@ def test_journal_dedup_and_outcome():
     assert roi == pytest.approx((80 * 0.92 - 80) / 80)
 
 
+def test_journal_batches_delivery_claims_and_preserves_dedup():
+    journal = Journal(":memory:")
+    signal = evaluate(sale(), book(), CFG)
+
+    assert journal.add_deliveries([(1, signal), (2, signal)]) == [1, 2]
+    assert journal.add_deliveries([(1, signal), (3, signal)]) == [3]
+    assert not journal.add_delivery(1, signal)
+    assert journal.db.execute("SELECT COUNT(*) FROM signal_deliveries").fetchone()[0] == 3
+
+
 def test_journal_migrates_existing_signals_table(tmp_path):
     path = tmp_path / "signals.db"
     db = sqlite3.connect(path)

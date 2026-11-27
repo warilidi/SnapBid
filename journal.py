@@ -42,11 +42,21 @@ class Journal:
 
     def add_delivery(self, user_id: int, s: Signal) -> bool:
         """Claim this signal for one user without deduplicating other users."""
+        return bool(self.add_deliveries([(user_id, s)]))
+
+    def add_deliveries(self, deliveries: list[tuple[int, Signal]]) -> list[int]:
+        """Claim all new per-user deliveries in one SQLite transaction."""
+        claimed = []
+        if not deliveries:
+            return claimed
         with self.db:
-            cur = self.db.execute(
-                "INSERT OR IGNORE INTO signal_deliveries VALUES (?, ?, ?)",
-                (user_id, s.uid, s.price))
-        return cur.rowcount == 1
+            for user_id, signal in deliveries:
+                cur = self.db.execute(
+                    "INSERT OR IGNORE INTO signal_deliveries VALUES (?, ?, ?)",
+                    (user_id, signal.uid, signal.price))
+                if cur.rowcount == 1:
+                    claimed.append(user_id)
+        return claimed
 
     def check_outcomes(self, book: PriceBook, cfg: Config, now: float | None = None) -> int:
         now = now or time.time()
