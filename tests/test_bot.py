@@ -87,3 +87,11 @@ def test_msgpack_lock_is_preserved_in_journal(lock, expected):
 
 def test_render_escapes_html():
     assert "AK &lt;Test&gt;" in render(evaluate(sale(), book(), CFG))
+
+
+def test_render_only_shows_valid_trade_lock_date():
+    valid = evaluate(sale(lock=msgpack.ExtType(1, b"2026-11-27T00:00:00Z")), book(), CFG)
+    invalid = evaluate(sale(lock=msgpack.ExtType(7, b"\xff\x00")), book(), CFG)
+
+    assert "Trade lock до: 2026-11-27" in render(valid)
+    assert "Trade lock до:" not in render(invalid)

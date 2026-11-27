@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+from datetime import date
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramRetryAfter
@@ -22,8 +23,13 @@ def render(s: Signal) -> str:
     ]
     if s.wear is not None:
         lines.append(f"Float: {s.wear:.4f}")
-    if s.lock:
-        lines.append(f"Trade lock до: {html.escape(s.lock[:10])}")
+    if isinstance(s.lock, str):
+        try:
+            lock_date = date.fromisoformat(s.lock[:10]).isoformat()
+        except ValueError:
+            pass
+        else:
+            lines.append(f"Trade lock до: {html.escape(lock_date)}")
     lines.append("<i>Это оценка, а не гарантия: цена может измениться.</i>")
     return "\n".join(lines)
 
