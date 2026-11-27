@@ -6,8 +6,9 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from access import Access
+from access import Access, User
 from billing import Billing, date, pay_keyboard
+from keyboards import admin_menu, back_to_menu, main_menu, settings_menu
 from stars import Stars
 from stats import Stats
 
@@ -39,10 +40,6 @@ def numbers(args: str | None, count: int) -> list[float] | None:
     return values if ok else None
 
 
-BUY = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="Купить доступ", callback_data="buy")]])
-
-
 def build_router(access: Access, billing: Billing | None = None,
                  stats: Stats | None = None, stars: Stars | None = None) -> Router:
     router = Router()
@@ -61,7 +58,43 @@ def build_router(access: Access, billing: Billing | None = None,
         return HELP + buy + (ADMIN_HELP if access.is_admin(user_id) else "") + (
             "\n/refund КОД — вернуть звёзды" if stars and access.is_admin(user_id) else "")
 
+    def home_keyboard(user_id: int) -> InlineKeyboardMarkup:
+        user = access.get(user_id)
+        can_sell = bool(stars or billing or access.cfg.sales_contact)
+        can_buy = can_sell and not access.is_banned(user_id) and not (
+            user and user.expires_at is None)
+        return main_menu(bool(user), can_buy, access.is_admin(user_id))
+
+    def settings_text(u: User) -> str:
+        return (
+            f"Мин. прибыль: {u.min_roi * 100:g}%\n"
+            f"Цена: {u.min_price:g}–{u.max_price:g} {access.cfg.currency}\n"
+            f"Сигналы: {'на паузе' if u.paused else 'включены'}\n"
+            f"Доступ: {'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}\n"
+            "Фильтры ROI и цены меняются командами /roi и /price.")
+
+    def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
+        if access.is_banned(user_id):
+            return "Доступ заблокирован. Обратитесь к администратору.", back_to_menu()
+        user = access.get(user_id)
+        if user and user.expires_at is None:
+            return "У вас бессрочный доступ.", back_to_menu()
+        if stars:
+            return stars.offer(user_id, billing is not None)
+        if billing:
+            extra = (f"\nПо поводу покупки пишите {access.cfg.sales_contact}"
+                     if access.cfg.sales_contact else "")
+            return billing.offer + extra, InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Согласен, оплатить", callback_data="buy")],
+                [InlineKeyboardButton(text="В главное меню", callback_data="menu:home")],
+            ])
+        if access.cfg.sales_contact:
+            return sales_text(user_id), back_to_menu()
+        return "Покупка сейчас недоступна.", back_to_menu()
+
     async def send_invoice(user, chat: Message):
+        if access.is_banned(user.id):
+            return await chat.answer("Доступ заблокирован. Обратитесь к администратору.")
         current = access.get(user.id)
         if current and current.expires_at is None:
             return await chat.answer("У вас бессрочный доступ.")
@@ -84,18 +117,22 @@ def build_router(access: Access, billing: Billing | None = None,
         @router.message(Command("buy"))
         async def buy_manual(m: Message):
             uid = m.from_user.id
+            if access.is_banned(uid):
+                return await m.answer("Доступ заблокирован. Обратитесь к администратору.")
             user = access.get(uid)
             if user and user.expires_at is None:
                 return await m.answer("У вас бессрочный доступ.")
-            await m.answer(sales_text(uid))
+            await m.answer(sales_text(uid), reply_markup=back_to_menu())
 
     if billing:
         @router.message(Command("buy"))
         async def buy(m: Message):
             await send_invoice(m.from_user, m)
 
-        @router.callback_query(F.data == "buy", F.message.chat.type == "private")
+        @router.callback_query(F.data == "buy")
         async def buy_button(q: CallbackQuery):
+            if not isinstance(q.message, Message) or q.message.chat.type != "private":
+                return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
             await q.answer()
             await send_invoice(q.from_user, q.message)
 
@@ -118,23 +155,155 @@ def build_router(access: Access, billing: Billing | None = None,
     async def start(m: Message, command: CommandObject):
         uid = m.from_user.id
         if access.get(uid):
-            await m.answer(help_text(uid))
+            await m.answer(help_text(uid), reply_markup=home_keyboard(uid))
         elif command.args and access.redeem(command.args, uid, m.from_user.full_name):
-            await m.answer("Доступ открыт.\n\n" + help_text(uid))
+            await m.answer("Доступ открыт.\n\n" + help_text(uid),
+                           reply_markup=home_keyboard(uid))
             await m.bot.send_message(
                 access.cfg.admin_id,
                 f"Новый участник: {m.from_user.full_name} (ID {uid})")
+        elif access.is_banned(uid):
+            await m.answer("Доступ заблокирован. Обратитесь к администратору.")
         elif stars:
-            text, keyboard = stars.offer(uid, billing is not None)
+            text, keyboard = purchase_text(uid)
             await m.answer(text, reply_markup=keyboard)
         elif billing:
-            contact = access.cfg.sales_contact
-            extra = f"\nПо поводу покупки: {contact}" if contact else ""
-            await m.answer(billing.offer + extra, reply_markup=BUY)
+            text, keyboard = purchase_text(uid)
+            await m.answer(text, reply_markup=keyboard)
         elif access.cfg.sales_contact:
-            await m.answer(sales_text(uid))
+            text, keyboard = purchase_text(uid)
+            await m.answer(text, reply_markup=keyboard)
         else:
             await m.answer("Нет доступа.")
+
+    @router.callback_query(F.data == "menu:home")
+    async def menu_home(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        uid = q.from_user.id
+        if access.is_banned(uid):
+            await q.answer("Доступ заблокирован. Обратитесь к администратору.", show_alert=True)
+            return
+        await q.answer()
+        if access.get(uid):
+            text = help_text(uid)
+        else:
+            text, _ = purchase_text(uid)
+        await q.bot.send_message(uid, text, reply_markup=home_keyboard(uid))
+
+    @router.callback_query(F.data == "menu:buy")
+    async def menu_buy(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        uid = q.from_user.id
+        if access.is_banned(uid):
+            return await q.answer("Доступ заблокирован. Обратитесь к администратору.",
+                                  show_alert=True)
+        await q.answer()
+        text, keyboard = purchase_text(uid)
+        await q.bot.send_message(uid, text, reply_markup=keyboard)
+
+    @router.callback_query(F.data == "menu:status")
+    async def menu_status(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        if not access.get(q.from_user.id):
+            return await q.answer("Доступ закрыт.", show_alert=True)
+        await q.answer()
+        await q.bot.send_message(
+            q.from_user.id, stats.text() if stats else "Статистика недоступна.",
+            reply_markup=home_keyboard(q.from_user.id))
+
+    @router.callback_query(F.data == "menu:settings")
+    async def menu_settings(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        user = access.get(q.from_user.id)
+        if user is None:
+            return await q.answer("Доступ закрыт.", show_alert=True)
+        await q.answer()
+        await q.bot.send_message(
+            q.from_user.id, settings_text(user),
+            reply_markup=settings_menu(user.paused))
+
+    @router.callback_query(F.data.in_({"settings:pause", "settings:resume"}))
+    async def menu_pause(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        user = access.get(q.from_user.id)
+        if user is None:
+            return await q.answer("Доступ закрыт.", show_alert=True)
+        paused = q.data == "settings:pause"
+        access.set_paused(q.from_user.id, paused)
+        user = access.get(q.from_user.id)
+        if user is None:
+            return await q.answer("Доступ истёк.", show_alert=True)
+        await q.answer("Сигналы поставлены на паузу." if paused else "Сигналы включены.")
+        await q.bot.send_message(
+            q.from_user.id, settings_text(user), reply_markup=settings_menu(user.paused))
+
+    @router.callback_query(F.data == "menu:admin")
+    async def menu_admin(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        if not access.is_admin(q.from_user.id):
+            return await q.answer("Недостаточно прав.", show_alert=True)
+        await q.answer()
+        await q.bot.send_message(
+            q.from_user.id, "Администрирование доступа:",
+            reply_markup=admin_menu(bool(stars)))
+
+    @router.callback_query(F.data == "admin:users")
+    async def menu_users(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        if not access.is_admin(q.from_user.id):
+            return await q.answer("Недостаточно прав.", show_alert=True)
+        await q.answer()
+        text = "\n".join(
+            f"{u.user_id} — {u.name}, "
+            f"{'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}"
+            f"{' (пауза)' if u.paused else ''}" for u in access.users())[:4000]
+        await q.bot.send_message(q.from_user.id, text or "Активных участников нет.",
+                                 reply_markup=back_to_menu())
+
+    @router.callback_query(F.data == "admin:invite")
+    async def menu_invite(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        if not access.is_admin(q.from_user.id):
+            return await q.answer("Недостаточно прав.", show_alert=True)
+        await q.answer()
+        me = await q.bot.me()
+        code = access.create_invite()
+        hours = access.cfg.invite_ttl // 3600
+        await q.bot.send_message(
+            q.from_user.id,
+            f"https://t.me/{me.username}?start={code}\n"
+            f"Одноразовая, действует {hours} ч. Доступ получит первый, кто нажмёт Start.",
+            reply_markup=back_to_menu())
+
+    @router.callback_query(F.data.in_({
+        "admin:usage:sub", "admin:usage:revoke", "admin:usage:refund"}))
+    async def menu_admin_usage(q: CallbackQuery):
+        if not isinstance(q.message, Message) or q.message.chat.type != "private":
+            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
+        if not access.is_admin(q.from_user.id):
+            return await q.answer("Недостаточно прав.", show_alert=True)
+        if q.data == "admin:usage:refund" and not stars:
+            return await q.answer("Возврат Stars сейчас недоступен.", show_alert=True)
+        messages = {
+            "admin:usage:sub": "Выдать или продлить доступ: /sub ID",
+            "admin:usage:revoke": "Отозвать доступ: /revoke ID",
+            "admin:usage:refund": "Вернуть Stars и списать дни: /refund КОД",
+        }
+        await q.answer()
+        await q.bot.send_message(
+            q.from_user.id, messages[q.data], reply_markup=back_to_menu())
+
+    @router.callback_query()
+    async def stale_callback(q: CallbackQuery):
+        await q.answer("Кнопка устарела. Нажмите /start.", show_alert=True)
 
     # Всё, что ниже, для посторонних не существует
     @router.message(Command("invite"), admin)
@@ -168,26 +337,27 @@ def build_router(access: Access, billing: Billing | None = None,
         await m.answer("\n".join(
             f"{u.user_id} — {u.name}, "
             f"{'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}"
-            f"{' (пауза)' if u.paused else ''}" for u in access.users())[:4000])
+            f"{' (пауза)' if u.paused else ''}" for u in access.users())[:4000],
+                       reply_markup=back_to_menu())
 
     @router.message(Command("revoke"), admin)
     async def revoke(m: Message, command: CommandObject):
         arg = (command.args or "").strip()
-        ok = arg.isdecimal() and access.revoke(int(arg))
+        ok = (arg.isascii() and arg.isdecimal() and 0 < int(arg) < 2**53
+              and access.revoke(int(arg)))
         await m.answer("Доступ отозван." if ok else "Не найдено. Пример: /revoke 123456789")
 
     @router.message(Command("settings"), allowed)
     async def settings(m: Message):
         u = access.get(m.from_user.id)
-        await m.answer(
-            f"Мин. прибыль: {u.min_roi * 100:g}%\n"
-            f"Цена: {u.min_price:g}–{u.max_price:g} {access.cfg.currency}\n"
-            f"Сигналы: {'на паузе' if u.paused else 'включены'}\n"
-            f"Доступ: {'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}")
+        if u is None:
+            return await m.answer("Доступ закрыт.")
+        await m.answer(settings_text(u), reply_markup=settings_menu(u.paused))
 
     @router.message(Command("status"), allowed)
     async def status(m: Message):
-        await m.answer(stats.text() if stats else "Статистика недоступна.")
+        await m.answer(stats.text() if stats else "Статистика недоступна.",
+                       reply_markup=home_keyboard(m.from_user.id))
 
     @router.message(Command("roi"), allowed)
     async def roi(m: Message, command: CommandObject):
@@ -209,10 +379,14 @@ def build_router(access: Access, billing: Billing | None = None,
     async def pause(m: Message, command: CommandObject):
         paused = command.command == "pause"
         access.set_paused(m.from_user.id, paused)
-        await m.answer("Сигналы на паузе." if paused else "Сигналы включены.")
+        user = access.get(m.from_user.id)
+        if user is None:
+            return await m.answer("Доступ закрыт.")
+        await m.answer("Сигналы на паузе." if paused else "Сигналы включены.",
+                       reply_markup=settings_menu(user.paused))
 
     @router.message(allowed)
     async def fallback(m: Message):
-        await m.answer(help_text(m.from_user.id))
+        await m.answer(help_text(m.from_user.id), reply_markup=home_keyboard(m.from_user.id))
 
     return router

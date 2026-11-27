@@ -24,6 +24,8 @@ class Stars:
 
     def refusal(self, user_id: int) -> str | None:
         """Почему этому ID нельзя продавать подписку."""
+        if self.access.is_banned(user_id):
+            return "Доступ заблокирован. Обратитесь к администратору."
         user = self.access.get(user_id)
         if user and user.expires_at is None:
             return "У вас уже бессрочный доступ."
@@ -41,6 +43,8 @@ class Stars:
         if crypto:
             rows.append([InlineKeyboardButton(
                 text=f"Согласен, оплатить {c.sub_price} {c.sub_asset}", callback_data="buy")])
+        rows.append([InlineKeyboardButton(text="Условия подписки", callback_data="menu:terms")])
+        rows.append([InlineKeyboardButton(text="В главное меню", callback_data="menu:home")])
         return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
     def terms(self) -> str:
@@ -64,14 +68,16 @@ class Stars:
         return self.refusal(user_id)
 
     def settle(self, charge_id: str, user_id: int, name: str, amount: int,
-               days: int) -> float | bool:
-        """False: платёж уже учтён. inf: доступ уже бессрочный."""
+               days: int, grant_access: bool = True) -> float | bool | None:
+        """False: duplicate; None: no access granted; inf: existing permanent access."""
         with self.db:  # запись о платеже и доступ меняются вместе
             cur = self.db.execute(
                 "INSERT OR IGNORE INTO star_payments VALUES (?, ?, ?, ?, 'paid', ?)",
                 (charge_id, user_id, amount, days, time.time()))
             if cur.rowcount != 1:
                 return False
+            if not grant_access or self.access.is_banned(user_id):
+                return None
             return self.access.grant(user_id, name, days)
 
     def payment(self, charge_id: str) -> tuple[int, int, str] | None:
@@ -100,21 +106,30 @@ def build_stars_router(stars: Stars, crypto: bool = False) -> Router:
     @router.message(F.successful_payment)
     async def paid(m: Message):
         p, uid = m.successful_payment, m.from_user.id
-        # Счёт проверен до оплаты; срок берём из него
-        days = int(p.invoice_payload.rsplit(":", 1)[1])
         charge = p.telegram_payment_charge_id
-        result = stars.settle(charge, uid, m.from_user.full_name, p.total_amount, days)
+        error = stars.check(uid, p.invoice_payload, p.currency, p.total_amount)
+        try:
+            prefix, payload_uid, payload_days = p.invoice_payload.split(":")
+            days = int(payload_days) if prefix == "sub" and int(payload_uid) == uid else 0
+        except (AttributeError, TypeError, ValueError):
+            days = 0
+        result = stars.settle(
+            charge, uid, m.from_user.full_name, p.total_amount, days,
+            grant_access=error is None and days > 0)
         if result is False:
             return
-        if result == FOREVER:
+        if result is None or result == FOREVER:
             try:
                 await m.bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge)
                 stars.mark_refunded(charge, take_days=False)
-                note = "Подписка не нужна или недоступна, звёзды возвращены."
+                note = ("Подписка недоступна, звёзды возвращены."
+                        if result is None else
+                        "Подписка не нужна, звёзды возвращены.")
             except Exception as e:
                 log.error("Возврат %s не прошёл: %s", charge, e)
                 note = "Подписка не выдана. Администратор проверит возврат."
-            admin_note = f"Платёж ID {uid} без выдачи доступа. {note}\n/refund {charge}"
+            reason = f" Причина: {error}" if error else ""
+            admin_note = f"Платёж ID {uid} без выдачи доступа.{reason} {note}\n/refund {charge}"
         else:
             note = f"Оплата получена. Доступ до {date(result)}\nКоманды: /start"
             admin_note = (f"⭐ {p.total_amount} от ID {uid} ({m.from_user.full_name})\n"
@@ -132,6 +147,16 @@ def build_stars_router(stars: Stars, crypto: bool = False) -> Router:
     async def terms(m: Message):
         await m.answer(stars.terms())
 
+    @router.callback_query(F.data == "menu:terms", F.message.chat.type == "private")
+    async def terms_button(q: CallbackQuery):
+        await q.answer()
+        await q.bot.send_message(
+            q.from_user.id, stars.terms(),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="К покупке", callback_data="menu:buy"),
+                InlineKeyboardButton(text="В главное меню", callback_data="menu:home"),
+            ]]))
+
     @router.message(Command("buy"))
     async def buy(m: Message):
         error = stars.refusal(m.from_user.id)
@@ -142,11 +167,12 @@ def build_stars_router(stars: Stars, crypto: bool = False) -> Router:
 
     @router.callback_query(F.data == "stars", F.message.chat.type == "private")
     async def invoice(q: CallbackQuery):
-        await q.answer()
         uid = q.from_user.id
         error = stars.refusal(uid)
         if error:
-            return await q.bot.send_message(uid, error)
+            await q.answer(error, show_alert=True)
+            return
+        await q.answer()
         await q.bot.send_invoice(
             chat_id=uid, title=f"Подписка на {cfg.sub_days} дн.",
             description=f"Сигналы о лотах на {cfg.sub_days} дн. Прибыль не гарантирована.",

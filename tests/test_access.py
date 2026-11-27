@@ -1,10 +1,11 @@
 import asyncio
 from datetime import datetime
 
+import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import GetMe, SendMessage
-from aiogram.types import Chat, Message, Update, User
+from aiogram.methods import AnswerCallbackQuery, GetMe, SendMessage
+from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from access import Access
 from config import Config
@@ -24,12 +25,18 @@ class FakeSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.sent = []
+        self.markups = []
+        self.answers = []
 
     async def make_request(self, bot, method, timeout=None):
         if isinstance(method, GetMe):
             return User(id=1, is_bot=True, first_name="b", username="test_bot")
+        if isinstance(method, AnswerCallbackQuery):
+            self.answers.append(method.text)
+            return True
         assert isinstance(method, SendMessage)
         self.sent.append((method.chat_id, method.text))
+        self.markups.append(method.reply_markup)
         return None
 
     async def stream_content(self, *a, **kw):
@@ -55,12 +62,25 @@ def setup(cfg=CFG):
         await dp.feed_update(bot, Update(update_id=1, message=msg))
         return list(session.sent)
 
-    return journal, access, bot, session, say
+    async def tap(uid, data, with_message=True):
+        session.sent.clear()
+        user = User(id=uid, is_bot=False, first_name=f"u{uid}")
+        bot_user = User(id=1, is_bot=True, first_name="b", username="test_bot")
+        message = Message(
+            message_id=1, date=datetime.now(), text="old menu",
+            chat=Chat(id=uid, type="private"), from_user=bot_user).as_(bot)
+        query = CallbackQuery(
+            id="callback", from_user=user, chat_instance="c", data=data,
+            message=message if with_message else None)
+        await dp.feed_update(bot, Update(update_id=2, callback_query=query))
+        return list(session.sent)
+
+    return journal, access, bot, session, say, tap
 
 
 def test_invite_first_only_and_permissions():
     async def run():
-        _, access, _, _, say = setup()
+        _, access, _, _, say, _ = setup()
         assert await say(STRANGER, "/start") == [(STRANGER, "Нет доступа.")]
         for cmd in ("/invite", "/users", "/settings", "/roi 5", "hi"):
             assert await say(STRANGER, cmd) == []
@@ -78,7 +98,7 @@ def test_invite_first_only_and_permissions():
         assert access.get(ADMIN)
         await say(ADMIN, f"/revoke {GUEST}")
         assert access.get(GUEST) is None
-        assert await say(GUEST, f"/start {code}") == [(GUEST, "Нет доступа.")]
+        assert "Доступ заблокирован" in (await say(GUEST, f"/start {code}"))[0][1]
         assert await say(ADMIN, "/settings", chat_type="group") == []
     asyncio.run(run())
 
@@ -90,9 +110,20 @@ def test_expired_invite():
     assert not access.redeem(code, GUEST, "g")
 
 
+def test_payment_grant_does_not_remove_admin_block():
+    _, access, *_ = setup()
+    assert access.redeem(access.create_invite(), GUEST, "guest")
+    assert access.revoke(GUEST)
+    with pytest.raises(PermissionError):
+        access.grant(GUEST, "guest", 30)
+    assert access.is_banned(GUEST) and access.get(GUEST) is None
+    assert access.subscribe(GUEST, 30) > 0
+    assert not access.is_banned(GUEST) and access.get(GUEST) is not None
+
+
 def test_settings_commands():
     async def run():
-        _, access, _, _, say = setup()
+        _, access, _, _, say, _ = setup()
         await say(ADMIN, "/roi 12,5")
         await say(ADMIN, "/price 10 50")
         await say(ADMIN, "/pause")
@@ -107,7 +138,7 @@ def test_settings_commands():
 
 def test_personal_filters_delivery_and_dedup():
     async def run():
-        journal, access, bot, session, _ = setup()
+        journal, access, bot, session, _, _ = setup()
         assert access.redeem(access.create_invite(), GUEST, "g")
         access.set_roi(GUEST, 0.30)
         notifier = Notifier(bot, access, pause=0)
@@ -137,7 +168,7 @@ def test_personal_filters_delivery_and_dedup():
 
 def test_manual_subscription():
     async def run():
-        _, access, _, _, say = setup(Config(admin_id=ADMIN, sub_days=30, stars_price=0))
+        _, access, _, _, say, _ = setup(Config(admin_id=ADMIN, sub_days=30, stars_price=0))
         for cmd in ("/start", "/buy"):
             text = (await say(GUEST, cmd))[0][1]
             assert "6 $" in text and "@warilidi" in text and str(GUEST) in text
@@ -151,9 +182,60 @@ def test_manual_subscription():
         await say(ADMIN, f"/revoke {GUEST}")
         for cmd in ("/start", "/buy"):
             text = (await say(GUEST, cmd))[0][1]
-            assert "6 $" in text and "@warilidi" in text and str(GUEST) in text
+            assert "Доступ заблокирован" in text
         await say(ADMIN, f"/sub {GUEST}")
         assert access.get(GUEST)
         for bad in ("/sub", "/sub abc", "/sub -5"):
             assert "Пример" in (await say(ADMIN, bad))[0][1]
+        for bad in ("/revoke 999999999999999999999999999", "/revoke １２３"):
+            assert "Не найдено" in (await say(ADMIN, bad))[0][1]
+    asyncio.run(run())
+
+
+def test_inline_navigation_authorization_and_repeated_actions():
+    async def run():
+        _, access, _, session, say, tap = setup()
+        assert access.redeem(access.create_invite(), GUEST, "guest")
+
+        await say(GUEST, "/start")
+        assert {button.callback_data for row in session.markups[-1].inline_keyboard
+                for button in row} == {"menu:status", "menu:settings"}
+
+        await tap(STRANGER, "menu:settings")
+        assert session.sent == []
+        assert session.answers[-1] == "Доступ закрыт."
+        await tap(STRANGER, "admin:users")
+        assert session.sent == []
+        assert session.answers[-1] == "Недостаточно прав."
+
+        await tap(GUEST, "menu:settings")
+        assert "Сигналы: включены" in session.sent[-1][1]
+        await tap(GUEST, "menu:status")
+        assert session.sent[-1][1] == "Статистика недоступна."
+        await tap(GUEST, "settings:pause")
+        assert access.get(GUEST).paused
+        await tap(GUEST, "settings:pause")
+        assert access.get(GUEST).paused
+        await tap(GUEST, "settings:resume")
+        assert not access.get(GUEST).paused
+
+        await tap(ADMIN, "menu:admin")
+        assert {button.callback_data for row in session.markups[-1].inline_keyboard
+                for button in row} >= {"admin:users", "admin:invite", "admin:usage:revoke"}
+        invite_count = access.db.execute("SELECT COUNT(*) FROM invites").fetchone()[0]
+        await tap(ADMIN, "admin:invite")
+        assert "https://t.me/test_bot?start=" in session.sent[-1][1]
+        assert access.db.execute("SELECT COUNT(*) FROM invites").fetchone()[0] == invite_count + 1
+        invite_count += 1
+        await tap(GUEST, "admin:invite")
+        assert access.db.execute("SELECT COUNT(*) FROM invites").fetchone()[0] == invite_count
+        await tap(ADMIN, "admin:usage:refund")
+        assert session.answers[-1] == "Возврат Stars сейчас недоступен."
+
+        access.revoke(GUEST)
+        await tap(GUEST, "settings:pause")
+        assert access.is_banned(GUEST) and session.sent == []
+        await tap(STRANGER, "not-a-real-callback", with_message=False)
+        assert session.sent == []
+        assert session.answers[-1] == "Кнопка устарела. Нажмите /start."
     asyncio.run(run())

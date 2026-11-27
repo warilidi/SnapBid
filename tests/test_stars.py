@@ -54,6 +54,18 @@ def test_stars_flow():
             assert "400 Stars" in session.sent[0][1] and "@warilidi" in session.sent[0][1]
         await feed(message=message(text="/terms"))
         assert "не гарантирована" in session.sent[0][1]
+        await feed(callback_query=CallbackQuery(
+            id="terms", from_user=user, chat_instance="c", data="menu:terms",
+            message=message(text="offer")))
+        assert "Условия подписки" in session.sent[0][1]
+        assert "menu:buy" in {
+            button.callback_data for row in session.markups[-1].inline_keyboard
+            for button in row}
+        await feed(message=message(text="/start"))
+        callback_data = [button.callback_data for row in session.markups[-1].inline_keyboard
+                         for button in row]
+        assert "menu:terms" in callback_data
+        assert len(callback_data) == len(set(callback_data))
         await feed(message=message(text="/paysupport"))
         assert "/paysupport текст" in session.sent[0][1]
 
@@ -74,10 +86,16 @@ def test_stars_flow():
         assert not await precheck(payload="sub:999:30")
         assert access.get(GUEST) is None  # до оплаты доступа нет
 
-        def payment(charge):
+        def payment(charge, currency="XTR", amount=400, payload=None):
             return message(successful_payment=SuccessfulPayment(
-                currency="XTR", total_amount=400, invoice_payload=invoice.payload,
+                currency=currency, total_amount=amount,
+                invoice_payload=payload if payload is not None else invoice.payload,
                 telegram_payment_charge_id=charge, provider_payment_charge_id=""))
+
+        await feed(message=payment("bad", amount=1, payload="sub:222:999"))
+        assert access.get(GUEST) is None
+        assert stars.payment("bad")[2] == "refunded"
+        assert isinstance(session.calls[0], RefundStarPayment)
 
         await feed(message=payment("c1"))
         first = access.get(GUEST).expires_at
@@ -97,14 +115,15 @@ def test_stars_flow():
         assert not session.calls
 
         access.revoke(GUEST)
-        assert await precheck()
+        assert not await precheck()
         for command in ("/start", "/buy"):
             await feed(message=message(text=command))
-            assert "400 Stars" in session.sent[0][1]
+            assert "Доступ заблокирован" in session.sent[0][1]
         await feed(callback_query=CallbackQuery(
             id="2", from_user=user, chat_instance="c", data="stars", message=message(text="x")))
-        assert isinstance(session.calls[-1], SendInvoice)
+        assert not any(isinstance(c, SendInvoice) for c in session.calls)
         await feed(message=payment("c3"))
-        assert access.get(GUEST) is not None
-        assert not access.is_banned(GUEST) and stars.payment("c3")[2] == "paid"
+        assert access.get(GUEST) is None
+        assert access.is_banned(GUEST) and stars.payment("c3")[2] == "refunded"
+        assert isinstance(session.calls[0], RefundStarPayment)
     asyncio.run(run())

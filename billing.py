@@ -61,6 +61,8 @@ class Billing:
         return f"Доступ на {c.sub_days} дн. — {c.sub_price} {c.sub_asset}"
 
     async def invoice_url(self, user_id: int, name: str) -> str:
+        if self.access.is_banned(user_id):
+            raise PermissionError("Доступ заблокирован")
         async with self.lock:  # двойное нажатие не создаёт два счёта
             row = self.db.execute(
                 "SELECT url FROM invoices WHERE user_id = ? AND status = 'pending' "
@@ -80,7 +82,7 @@ class Billing:
                      url, time.time()))
             return url
 
-    def settle(self, invoice_id: int) -> tuple[int, float] | None:
+    def settle(self, invoice_id: int) -> tuple[int, float | None] | None:
         """Засчитывает оплату ровно один раз."""
         with self.db:  # статус и доступ меняются одной транзакцией
             cur = self.db.execute(
@@ -91,6 +93,8 @@ class Billing:
             user_id, name, days = self.db.execute(
                 "SELECT user_id, name, days FROM invoices WHERE invoice_id = ?",
                 (invoice_id,)).fetchone()
+            if self.access.is_banned(user_id):
+                return user_id, None
             return user_id, self.access.grant(user_id, name, days)
 
     async def check(self, bot: Bot) -> None:
@@ -109,8 +113,11 @@ class Billing:
                         await self.notify(bot, invoice["invoice_id"], *result)
 
     async def notify(self, bot: Bot, invoice_id: int, user_id: int,
-                     expires: float) -> None:
-        if expires == float("inf"):
+                     expires: float | None) -> None:
+        if expires is None:
+            user_text = "Оплата получена, но доступ заблокирован. Напишите /paysupport."
+            admin_text = f"Оплата от заблокированного ID {user_id}, счёт {invoice_id}: проверьте возврат."
+        elif expires == float("inf"):
             user_text = "Оплата получена, но у вас уже бессрочный доступ. Напишите /paysupport"
             admin_text = f"Лишняя оплата: ID {user_id}, счёт {invoice_id}"
         else:

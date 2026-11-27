@@ -82,13 +82,18 @@ def test_expired_revoked_and_permanent():
         await billing.check(bot)
         assert access.get(GUEST).expires_at is None
         assert "бессрочный" in bot.sent[0][1]
-        access.revoke(GUEST)
         await billing.invoice_url(GUEST, "g")
+        access.revoke(GUEST)
+        try:
+            await billing.invoice_url(GUEST, "g")
+            raise AssertionError("заблокированному пользователю нельзя создать новый счёт")
+        except PermissionError:
+            pass
         api.status[3] = "paid"
         await billing.check(bot)
-        assert access.get(GUEST) is not None
-        assert not access.is_banned(GUEST)
-        assert "Оплата получена" in bot.sent[-2][1]
+        assert access.get(GUEST) is None
+        assert access.is_banned(GUEST)
+        assert "доступ заблокирован" in bot.sent[-2][1]
     asyncio.run(run())
 
 
@@ -135,7 +140,7 @@ def test_bot_flow():
         from handlers import build_router
         from test_access import setup as bot_setup
 
-        journal, access, bot, session, _ = bot_setup()
+        journal, access, bot, session, _, _ = bot_setup()
         billing = Billing(access, FakeApi(), CFG)
         dp = Dispatcher()
         dp.include_router(build_router(access, billing))
@@ -165,11 +170,12 @@ def test_bot_flow():
         count = len(session.sent)
         await dp.feed_update(bot, Update(update_id=4, message=message("/settings")))
         assert len(session.sent) == count
+        access.subscribe(GUEST, 1)
         access.revoke(GUEST)
         await dp.feed_update(bot, Update(update_id=5, message=message("/start")))
-        assert "6 USDT" in session.sent[-1][1]
+        assert "Доступ заблокирован" in session.sent[-1][1]
         query = CallbackQuery(id="2", from_user=user, chat_instance="c",
                               data="buy", message=message("x"))
         await dp.feed_update(bot, Update(update_id=6, callback_query=query))
-        assert "Счёт действует" in session.sent[-1][1]
+        assert "Доступ заблокирован" in session.sent[-1][1]
     asyncio.run(run())
