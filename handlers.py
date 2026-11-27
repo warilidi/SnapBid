@@ -65,8 +65,6 @@ def build_router(access: Access, billing: Billing | None = None,
         current = access.get(user.id)
         if current and current.expires_at is None:
             return await chat.answer("У вас бессрочный доступ.")
-        if access.is_banned(user.id):
-            return await chat.answer("Нет доступа.")
         try:
             url = await billing.invoice_url(user.id, user.full_name)
         except Exception as e:
@@ -89,8 +87,6 @@ def build_router(access: Access, billing: Billing | None = None,
             user = access.get(uid)
             if user and user.expires_at is None:
                 return await m.answer("У вас бессрочный доступ.")
-            if access.is_banned(uid):
-                return await m.answer("Нет доступа.")
             await m.answer(sales_text(uid))
 
     if billing:
@@ -128,14 +124,14 @@ def build_router(access: Access, billing: Billing | None = None,
             await m.bot.send_message(
                 access.cfg.admin_id,
                 f"Новый участник: {m.from_user.full_name} (ID {uid})")
-        elif stars and not access.is_banned(uid):
+        elif stars:
             text, keyboard = stars.offer(uid, billing is not None)
             await m.answer(text, reply_markup=keyboard)
-        elif billing and not access.is_banned(uid):
+        elif billing:
             contact = access.cfg.sales_contact
             extra = f"\nПо поводу покупки: {contact}" if contact else ""
             await m.answer(billing.offer + extra, reply_markup=BUY)
-        elif access.cfg.sales_contact and not access.is_banned(uid):
+        elif access.cfg.sales_contact:
             await m.answer(sales_text(uid))
         else:
             await m.answer("Нет доступа.")

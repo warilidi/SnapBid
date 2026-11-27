@@ -97,8 +97,14 @@ def test_stars_flow():
         assert not session.calls
 
         access.revoke(GUEST)
-        assert not await precheck()
-        await feed(message=payment("c3"))  # оплата заблокированным: автовозврат
-        assert isinstance(session.calls[0], RefundStarPayment)
-        assert access.get(GUEST) is None and stars.payment("c3")[2] == "refunded"
+        assert await precheck()
+        for command in ("/start", "/buy"):
+            await feed(message=message(text=command))
+            assert "400 Stars" in session.sent[0][1]
+        await feed(callback_query=CallbackQuery(
+            id="2", from_user=user, chat_instance="c", data="stars", message=message(text="x")))
+        assert isinstance(session.calls[-1], SendInvoice)
+        await feed(message=payment("c3"))
+        assert access.get(GUEST) is not None
+        assert not access.is_banned(GUEST) and stars.payment("c3")[2] == "paid"
     asyncio.run(run())

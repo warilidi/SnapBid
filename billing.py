@@ -80,8 +80,8 @@ class Billing:
                      url, time.time()))
             return url
 
-    def settle(self, invoice_id: int) -> tuple[int, float | None] | None:
-        """Засчитывает оплату ровно один раз. expires=None: ID заблокирован."""
+    def settle(self, invoice_id: int) -> tuple[int, float] | None:
+        """Засчитывает оплату ровно один раз."""
         with self.db:  # статус и доступ меняются одной транзакцией
             cur = self.db.execute(
                 "UPDATE invoices SET status = 'paid' "
@@ -109,13 +109,10 @@ class Billing:
                         await self.notify(bot, invoice["invoice_id"], *result)
 
     async def notify(self, bot: Bot, invoice_id: int, user_id: int,
-                     expires: float | None) -> None:
+                     expires: float) -> None:
         if expires == float("inf"):
             user_text = "Оплата получена, но у вас уже бессрочный доступ. Напишите /paysupport"
             admin_text = f"Лишняя оплата: ID {user_id}, счёт {invoice_id}"
-        elif expires is None:
-            user_text = "Оплата получена, но доступ для вас закрыт. Напишите /paysupport"
-            admin_text = f"Заблокированный ID {user_id} оплатил счёт {invoice_id}: нужен возврат"
         else:
             user_text = f"Оплата получена. Доступ до {date(expires)}\nКоманды: /start"
             admin_text = f"Оплата: ID {user_id}, счёт {invoice_id}"

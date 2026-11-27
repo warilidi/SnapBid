@@ -85,10 +85,9 @@ class Access:
         return self.db.execute(
             "SELECT 1 FROM banned WHERE user_id = ?", (user_id,)).fetchone() is not None
 
-    def grant(self, user_id: int, name: str, days: int) -> float | None:
+    def grant(self, user_id: int, name: str, days: int) -> float:
         """Продлевает оплаченный доступ. Вызывать внутри транзакции."""
-        if self.is_banned(user_id):
-            return None
+        self.db.execute("DELETE FROM banned WHERE user_id = ?", (user_id,))
         now = time.time()
         row = self.db.execute(
             "SELECT expires_at FROM users WHERE user_id = ?", (user_id,)).fetchone()

@@ -24,8 +24,6 @@ class Stars:
 
     def refusal(self, user_id: int) -> str | None:
         """Почему этому ID нельзя продавать подписку."""
-        if self.access.is_banned(user_id):
-            return "Нет доступа."
         user = self.access.get(user_id)
         if user and user.expires_at is None:
             return "У вас уже бессрочный доступ."
@@ -66,8 +64,8 @@ class Stars:
         return self.refusal(user_id)
 
     def settle(self, charge_id: str, user_id: int, name: str, amount: int,
-               days: int) -> float | None | bool:
-        """False: платёж уже учтён. None или inf: доступ не выдан."""
+               days: int) -> float | bool:
+        """False: платёж уже учтён. inf: доступ уже бессрочный."""
         with self.db:  # запись о платеже и доступ меняются вместе
             cur = self.db.execute(
                 "INSERT OR IGNORE INTO star_payments VALUES (?, ?, ?, ?, 'paid', ?)",
@@ -108,7 +106,7 @@ def build_stars_router(stars: Stars, crypto: bool = False) -> Router:
         result = stars.settle(charge, uid, m.from_user.full_name, p.total_amount, days)
         if result is False:
             return
-        if result is None or result == FOREVER:
+        if result == FOREVER:
             try:
                 await m.bot.refund_star_payment(user_id=uid, telegram_payment_charge_id=charge)
                 stars.mark_refunded(charge, take_days=False)

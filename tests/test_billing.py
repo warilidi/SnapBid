@@ -69,7 +69,7 @@ def test_pay_once_extend_expire():
     asyncio.run(run())
 
 
-def test_expired_banned_and_permanent():
+def test_expired_revoked_and_permanent():
     async def run():
         access, api, billing, bot = setup()
         await billing.invoice_url(GUEST, "g")
@@ -86,8 +86,9 @@ def test_expired_banned_and_permanent():
         await billing.invoice_url(GUEST, "g")
         api.status[3] = "paid"
         await billing.check(bot)
-        assert access.get(GUEST) is None
-        assert "возврат" in bot.sent[-1][1]
+        assert access.get(GUEST) is not None
+        assert not access.is_banned(GUEST)
+        assert "Оплата получена" in bot.sent[-2][1]
     asyncio.run(run())
 
 
@@ -164,4 +165,11 @@ def test_bot_flow():
         count = len(session.sent)
         await dp.feed_update(bot, Update(update_id=4, message=message("/settings")))
         assert len(session.sent) == count
+        access.revoke(GUEST)
+        await dp.feed_update(bot, Update(update_id=5, message=message("/start")))
+        assert "6 USDT" in session.sent[-1][1]
+        query = CallbackQuery(id="2", from_user=user, chat_instance="c",
+                              data="buy", message=message("x"))
+        await dp.feed_update(bot, Update(update_id=6, callback_query=query))
+        assert "Счёт действует" in session.sent[-1][1]
     asyncio.run(run())

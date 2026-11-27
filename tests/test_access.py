@@ -149,7 +149,9 @@ def test_manual_subscription():
         await say(ADMIN, f"/sub {GUEST}")
         assert access.get(GUEST).expires_at == first + 30 * 86400
         await say(ADMIN, f"/revoke {GUEST}")
-        assert await say(GUEST, "/start") == [(GUEST, "Нет доступа.")]
+        for cmd in ("/start", "/buy"):
+            text = (await say(GUEST, cmd))[0][1]
+            assert "6 $" in text and "@warilidi" in text and str(GUEST) in text
         await say(ADMIN, f"/sub {GUEST}")
         assert access.get(GUEST)
         for bad in ("/sub", "/sub abc", "/sub -5"):
