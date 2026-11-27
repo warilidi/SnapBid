@@ -69,6 +69,8 @@ class Access:
                 "(user_id, provider, enabled, min_price, max_price) "
                 "SELECT user_id, 'dmarket', 0, ?, ? FROM users",
                 (cfg.min_price, cfg.max_price))
+            db.execute(
+                "UPDATE user_market_settings SET enabled = 0 WHERE provider = 'dmarket'")
             self._add_user(cfg.admin_id, "admin")
 
     def _add_user(self, user_id: int, name: str) -> None:
@@ -190,10 +192,10 @@ class Access:
 
     def set_market_enabled(self, user_id: int, provider: str, enabled: bool) -> None:
         self._check_provider(provider)
-        if enabled and provider == "dmarket" and not (
-                self.cfg.dmarket_api_key and self.cfg.dmarket_secret_key):
+        if enabled and provider == "dmarket":
             raise ValueError(
-                "DMarket не подключён: задайте DMARKET_API_KEY и DMARKET_SECRET_KEY.")
+                "DMarket отключён: условия площадки ограничивают доступ для пользователей "
+                "из России и Беларуси.")
         with self.db:
             self.db.execute(
                 "UPDATE user_market_settings SET enabled = ? "

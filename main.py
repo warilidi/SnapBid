@@ -210,21 +210,6 @@ async def main() -> None:
         raise SystemExit("Заполните TELEGRAM_BOT_TOKEN и ADMIN_ID в файле .env")
     book, journal = PriceBook(), Journal(cfg.db_path)
     access = Access(journal.db, cfg)
-    dmarket_client = None
-    if cfg.dmarket_api_key and cfg.dmarket_secret_key:
-        try:
-            dmarket_client = DMarketClient(cfg.dmarket_api_key, cfg.dmarket_secret_key)
-        except ValueError as exc:
-            log.error("DMarket monitoring disabled: %s", exc)
-    elif cfg.dmarket_api_key or cfg.dmarket_secret_key:
-        log.warning("DMarket monitoring disabled: both API credentials are required")
-    elif any(
-        (settings := access.market_settings(user.user_id, "dmarket"))
-        and settings.enabled for user in access.users()
-    ):
-        log.warning(
-            "DMarket is selected by a user but monitoring is disabled: "
-            "set DMARKET_API_KEY and DMARKET_SECRET_KEY")
     bot = Bot(cfg.token)
     notifier = Notifier(bot, access)
     dispatcher = Dispatcher()
@@ -243,9 +228,6 @@ async def main() -> None:
             tasks.create_task(log_stats(stats))
             if billing:
                 tasks.create_task(billing.run(bot))
-            if dmarket_client:
-                tasks.create_task(monitor_dmarket(
-                    dmarket_client, journal, notifier, access, stats))
     finally:
         await notifier.close()
         await bot.session.close()

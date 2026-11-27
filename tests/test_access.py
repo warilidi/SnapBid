@@ -148,13 +148,14 @@ def test_marketplace_settings_migrate_and_remain_per_user():
     assert not access.market_settings(ADMIN, "dmarket").enabled
     assert not access.market_settings(GUEST, "dmarket").enabled
 
-    access.set_market_enabled(ADMIN, "dmarket", True)
+    with pytest.raises(ValueError, match="России и Беларуси"):
+        access.set_market_enabled(ADMIN, "dmarket", True)
     access.set_market_price(ADMIN, "dmarket", 20, 40)
     access.set_market_float(ADMIN, "dmarket", 0.1, 0.2)
     access.set_roi(ADMIN, 0.25)
     access.set_price(ADMIN, 10, 100)
 
-    assert access.market_settings(ADMIN, "dmarket").enabled
+    assert not access.market_settings(ADMIN, "dmarket").enabled
     assert (access.market_settings(ADMIN, "dmarket").min_price,
             access.market_settings(ADMIN, "dmarket").max_price,
             access.market_settings(ADMIN, "dmarket").min_float,
@@ -182,7 +183,18 @@ def test_existing_skinport_user_filters_are_preserved_by_market_migration():
     assert (settings.min_roi, settings.min_price, settings.max_price) == (0.27, 11, 77)
 
 
-def test_marketplace_inline_controls_and_dmarket_filters():
+def test_existing_dmarket_selections_are_disabled_on_startup():
+    cfg = Config(admin_id=ADMIN)
+    db = sqlite3.connect(":memory:")
+    access = Access(db, cfg)
+    access.db.execute(
+        "UPDATE user_market_settings SET enabled = 1 WHERE provider = 'dmarket'")
+
+    restarted_access = Access(db, cfg)
+    assert not restarted_access.market_settings(ADMIN, "dmarket").enabled
+
+
+def test_marketplace_inline_controls_disable_dmarket_in_restricted_regions():
     async def run():
         cfg = Config(admin_id=ADMIN, dmarket_api_key="configured",
                      dmarket_secret_key="configured")
@@ -191,29 +203,28 @@ def test_marketplace_inline_controls_and_dmarket_filters():
 
         await tap(GUEST, "markets:open")
         assert "Skinport: включён" in session.sent[-1][1]
-        assert any(
-            button.callback_data == "markets:toggle:dmarket"
+        assert "DMarket отключён" in session.sent[-1][1]
+        assert "Skinport" in session.sent[-1][1]
+        assert all(
+            button.callback_data != "markets:toggle:dmarket"
             for row in session.markups[-1].inline_keyboard for button in row)
 
         await tap(GUEST, "markets:toggle:dmarket")
-        assert access.market_settings(GUEST, "dmarket").enabled
-        await say(GUEST, "/dmarket_price 12 50")
-        await say(GUEST, "/dmarket_float 0.1 0.2")
-        settings = access.market_settings(GUEST, "dmarket")
-        assert (settings.min_price, settings.max_price) == (12, 50)
-        assert (settings.min_float, settings.max_float) == (0.1, 0.2)
-        for invalid in ("/dmarket_price 20 10", "/dmarket_float 0.5 1.1"):
-            await say(GUEST, invalid)
-        assert access.market_settings(GUEST, "dmarket") == settings
+        assert "России и Беларуси" in session.answers[-1]
+        assert not access.market_settings(GUEST, "dmarket").enabled
+        await tap(GUEST, "markets:filters:dmarket")
+        assert "отключён" in session.answers[-1]
 
     asyncio.run(run())
 
 
-def test_marketplace_callback_explains_missing_credentials():
+def test_marketplace_callback_blocks_dmarket_even_with_credentials():
     async def run():
-        _, access, _, session, _, tap = setup()
+        cfg = Config(admin_id=ADMIN, dmarket_api_key="configured",
+                     dmarket_secret_key="configured")
+        _, access, _, session, _, tap = setup(cfg)
         await tap(ADMIN, "markets:toggle:dmarket")
-        assert "DMARKET_API_KEY" in session.answers[-1]
+        assert "России и Беларуси" in session.answers[-1]
         assert not access.market_settings(ADMIN, "dmarket").enabled
 
     asyncio.run(run())

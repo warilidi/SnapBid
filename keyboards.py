@@ -31,15 +31,11 @@ def settings_menu(paused: bool) -> InlineKeyboardMarkup:
     ])
 
 
-def marketplaces_menu(skinport_enabled: bool, dmarket_enabled: bool) -> InlineKeyboardMarkup:
+def marketplaces_menu(skinport_enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"Skinport: {'вкл' if skinport_enabled else 'выкл'}",
             callback_data="markets:toggle:skinport")],
-        [InlineKeyboardButton(
-            text=f"DMarket: {'вкл' if dmarket_enabled else 'выкл'}",
-            callback_data="markets:toggle:dmarket")],
-        [InlineKeyboardButton(text="Фильтры DMarket", callback_data="markets:filters:dmarket")],
         [InlineKeyboardButton(text="Назад к настройкам", callback_data="menu:settings")],
     ])
 

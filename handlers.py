@@ -21,8 +21,6 @@ HELP = """Команды:
 /status — время работы и статистика
 /roi 12 — минимальная чистая прибыль, %
 /price 5 300 — диапазон цены лота
-/dmarket_price 5 300 — диапазон цены DMarket, USD
-/dmarket_float 0.1 0.2 — диапазон float DMarket
 /pause — остановить сигналы
 /resume — включить сигналы"""
 
@@ -79,39 +77,13 @@ def build_router(access: Access, billing: Billing | None = None,
 
     def marketplaces_text(user_id: int) -> str:
         skinport = access.market_settings(user_id, "skinport")
-        dmarket = access.market_settings(user_id, "dmarket")
-        credentials = bool(access.cfg.dmarket_api_key and access.cfg.dmarket_secret_key)
-        credentials_text = (
-            "Ключи DMarket настроены." if credentials else
-            "Для DMarket задайте DMARKET_API_KEY и DMARKET_SECRET_KEY в окружении.")
-        float_range = (
-            "любой" if dmarket is None or dmarket.min_float is None
-            or dmarket.max_float is None
-            else f"{dmarket.min_float:.4f}–{dmarket.max_float:.4f}")
         return (
             "Выбор площадок действует только для вашего аккаунта.\n"
             f"Skinport: {'включён' if skinport and skinport.enabled else 'выключен'}; "
             f"фильтры /roi и /price.\n"
-            f"DMarket: {'включён' if dmarket and dmarket.enabled else 'выключен'}; "
-            f"цена {dmarket.min_price:g}–{dmarket.max_price:g} USD, "
-            f"float {float_range}.\n"
-            f"{credentials_text}\n"
-            "У DMarket пока нет подтверждённой ссылки на конкретный лот; "
-            "в сообщении будет ID без кнопки перехода.\n"
-            "BitSkins пока не включён: контракт ответа с лотами не подтверждён.")
-
-    def dmarket_filters_text(user_id: int) -> str:
-        settings = access.market_settings(user_id, "dmarket")
-        assert settings is not None
-        float_range = (
-            "любой" if settings.min_float is None or settings.max_float is None
-            else f"{settings.min_float:.4f}–{settings.max_float:.4f}")
-        return (
-            f"Фильтры DMarket (USD): цена {settings.min_price:g}–"
-            f"{settings.max_price:g}, float {float_range}.\n"
-            "Изменить:\n"
-            "/dmarket_price 5 300\n"
-            "/dmarket_float 0.1 0.2")
+            "DMarket отключён: условия площадки ограничивают доступ для пользователей "
+            "из России и Беларуси.\n"
+            "Доступность Skinport для оператора из России и регион Wispbyte не подтверждены.")
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
         if access.is_banned(user_id):
@@ -274,13 +246,10 @@ def build_router(access: Access, billing: Billing | None = None,
         if user is None:
             return await q.answer("Доступ закрыт.", show_alert=True)
         skinport = access.market_settings(user.user_id, "skinport")
-        dmarket = access.market_settings(user.user_id, "dmarket")
         await q.answer()
         await q.bot.send_message(
             user.user_id, marketplaces_text(user.user_id),
-            reply_markup=marketplaces_menu(
-                bool(skinport and skinport.enabled),
-                bool(dmarket and dmarket.enabled)))
+            reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
 
     @router.callback_query(F.data.in_({
         "markets:toggle:skinport", "markets:toggle:dmarket"}))
@@ -300,25 +269,15 @@ def build_router(access: Access, billing: Billing | None = None,
             return await q.answer(str(exc), show_alert=True)
         await q.answer("Настройки площадки обновлены.")
         skinport = access.market_settings(user.user_id, "skinport")
-        dmarket = access.market_settings(user.user_id, "dmarket")
         await q.bot.send_message(
             user.user_id, marketplaces_text(user.user_id),
-            reply_markup=marketplaces_menu(
-                bool(skinport and skinport.enabled),
-                bool(dmarket and dmarket.enabled)))
+            reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
 
     @router.callback_query(F.data == "markets:filters:dmarket")
     async def menu_dmarket_filters(q: CallbackQuery):
-        if not isinstance(q.message, Message) or q.message.chat.type != "private":
-            return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
-        if not access.get(q.from_user.id):
-            return await q.answer("Доступ закрыт.", show_alert=True)
-        await q.answer()
-        await q.bot.send_message(
-            q.from_user.id, dmarket_filters_text(q.from_user.id),
-            reply_markup=marketplaces_menu(
-                bool(access.market_settings(q.from_user.id, "skinport").enabled),
-                bool(access.market_settings(q.from_user.id, "dmarket").enabled)))
+        return await q.answer(
+            "DMarket отключён для пользователей из России и Беларуси.",
+            show_alert=True)
 
     @router.callback_query(F.data.in_({"settings:pause", "settings:resume"}))
     async def menu_pause(q: CallbackQuery):
@@ -468,23 +427,6 @@ def build_router(access: Access, billing: Billing | None = None,
             return await m.answer("Пример: /price 5 300")
         access.set_price(m.from_user.id, *v)
         await m.answer(f"Цена: {v[0]:g}–{v[1]:g} {access.cfg.currency}")
-
-    @router.message(Command("dmarket_price"), allowed)
-    async def dmarket_price(m: Message, command: CommandObject):
-        values = numbers(command.args, 2)
-        if not values or values[0] >= values[1]:
-            return await m.answer("Пример: /dmarket_price 5 300 (USD)")
-        access.set_market_price(m.from_user.id, "dmarket", *values)
-        await m.answer(f"Фильтр DMarket: {values[0]:g}–{values[1]:g} USD")
-
-    @router.message(Command("dmarket_float"), allowed)
-    async def dmarket_float(m: Message, command: CommandObject):
-        values = numbers(command.args, 2)
-        if not values or values[0] >= values[1] or values[1] > 1:
-            return await m.answer("Пример: /dmarket_float 0.1 0.2 (от 0 до 1)")
-        access.set_market_float(m.from_user.id, "dmarket", *values)
-        await m.answer(
-            f"Фильтр float DMarket: {values[0]:.4f}–{values[1]:.4f}")
 
     @router.message(Command("pause", "resume"), allowed)
     async def pause(m: Message, command: CommandObject):

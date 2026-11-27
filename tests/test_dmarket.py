@@ -138,8 +138,8 @@ def test_dmarket_filters_and_delivery_are_isolated_per_user():
         )
         journal, access, _, _, _, _ = setup(cfg)
         assert access.redeem(access.create_invite(), GUEST, "guest")
-        access.set_market_enabled(ADMIN, "dmarket", True)
-        access.set_market_enabled(GUEST, "dmarket", True)
+        access.db.execute(
+            "UPDATE user_market_settings SET enabled = 1 WHERE provider = 'dmarket'")
         access.set_market_price(GUEST, "dmarket", 15, 20)
         access.set_market_float(GUEST, "dmarket", 0.1, 0.2)
 
@@ -175,9 +175,9 @@ def test_dmarket_filters_and_delivery_are_isolated_per_user():
     asyncio.run(run())
 
 
-def test_dmarket_missing_credentials_cannot_be_enabled():
+def test_dmarket_cannot_be_enabled_for_restricted_regions():
     _, access, *_ = setup(Config(admin_id=ADMIN))
-    with pytest.raises(ValueError, match="DMARKET_API_KEY.*DMARKET_SECRET_KEY"):
+    with pytest.raises(ValueError, match="России и Беларуси"):
         access.set_market_enabled(ADMIN, "dmarket", True)
     assert not access.market_settings(ADMIN, "dmarket").enabled
 
