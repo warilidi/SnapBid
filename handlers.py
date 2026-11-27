@@ -75,15 +75,8 @@ def build_router(access: Access, billing: Billing | None = None,
             f"Доступ: {'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}\n"
             "Фильтры ROI и цены меняются командами /roi и /price.")
 
-    def marketplaces_text(user_id: int) -> str:
-        skinport = access.market_settings(user_id, "skinport")
-        return (
-            "Выбор площадок действует только для вашего аккаунта.\n"
-            f"Skinport: {'включён' if skinport and skinport.enabled else 'выключен'}; "
-            f"фильтры /roi и /price.\n"
-            "DMarket отключён: условия площадки ограничивают доступ для пользователей "
-            "из России и Беларуси.\n"
-            "Доступность Skinport для оператора из России и регион Wispbyte не подтверждены.")
+    def marketplaces_text() -> str:
+        return "Выберите площадку:"
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
         if access.is_banned(user_id):
@@ -248,7 +241,7 @@ def build_router(access: Access, billing: Billing | None = None,
         skinport = access.market_settings(user.user_id, "skinport")
         await q.answer()
         await q.bot.send_message(
-            user.user_id, marketplaces_text(user.user_id),
+            user.user_id, marketplaces_text(),
             reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
 
     @router.callback_query(F.data.in_({
@@ -270,7 +263,7 @@ def build_router(access: Access, billing: Billing | None = None,
         await q.answer("Настройки площадки обновлены.")
         skinport = access.market_settings(user.user_id, "skinport")
         await q.bot.send_message(
-            user.user_id, marketplaces_text(user.user_id),
+            user.user_id, marketplaces_text(),
             reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
 
     @router.callback_query(F.data == "markets:filters:dmarket")

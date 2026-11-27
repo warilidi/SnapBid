@@ -89,44 +89,55 @@ def handle_event(event: dict, book: PriceBook, journal: Journal, notifier: Notif
             log.exception("Ошибка обработки лота")
 
 
-def handle_dmarket_listing(
-    listing: DMarketListing, journal: Journal, notifier: Notifier,
+def handle_marketplace_listing(
+    signal: MarketplaceSignal, journal: Journal, notifier: Notifier,
     access: Access, stats: Stats,
 ) -> None:
-    if not journal.add_market_signal("dmarket", listing.item_id, listing.price):
-        stats.add("DMarket: повтор")
+    provider = signal.provider.lower()
+    if not journal.add_market_signal(provider, signal.listing_id, signal.price):
+        stats.add(f"{signal.provider}: повтор")
         return
     matches = []
     for user in access.users():
         if user.paused:
             continue
-        settings = access.market_settings(user.user_id, "dmarket")
+        settings = access.market_settings(user.user_id, provider)
         if settings is None or not settings.enabled:
             continue
-        if not settings.min_price <= listing.price <= settings.max_price:
+        if not settings.min_price <= signal.price <= settings.max_price:
             continue
         if settings.min_float is not None or settings.max_float is not None:
-            if listing.float_value is None:
+            if signal.wear is None:
                 continue
-            if settings.min_float is not None and listing.float_value < settings.min_float:
+            if settings.min_float is not None and signal.wear < settings.min_float:
                 continue
-            if settings.max_float is not None and listing.float_value > settings.max_float:
+            if settings.max_float is not None and signal.wear > settings.max_float:
                 continue
         matches.append(user.user_id)
 
-    signal = MarketplaceSignal(
-        provider="DMarket",
-        listing_id=listing.item_id,
-        name=listing.title,
-        price=listing.price,
-        currency="USD",
-        wear=listing.float_value,
-    )
     claimed_users = set(journal.add_market_deliveries(
-        "dmarket", listing.item_id, listing.price, matches))
+        provider, signal.listing_id, signal.price, matches))
     for user_id in claimed_users:
         notifier.push(user_id, signal)
-    stats.add("DMarket: подошёл" if claimed_users else "DMarket: нет получателей")
+    stats.add(
+        f"{signal.provider}: подошёл" if claimed_users
+        else f"{signal.provider}: нет получателей")
+
+
+def handle_dmarket_listing(
+    listing: DMarketListing, journal: Journal, notifier: Notifier,
+    access: Access, stats: Stats,
+) -> None:
+    handle_marketplace_listing(
+        MarketplaceSignal(
+            provider="DMarket",
+            listing_id=listing.item_id,
+            name=listing.title,
+            price=listing.price,
+            currency="USD",
+            wear=listing.float_value,
+        ),
+        journal, notifier, access, stats)
 
 
 async def monitor_dmarket(
