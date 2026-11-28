@@ -6,9 +6,10 @@ import aiohttp
 import socketio
 from aiogram import Bot, Dispatcher
 
-from access import Access
+from access import Access, marketplace_currency
 from billing import Billing, CryptoPay
 from config import Config
+import csgomarket
 from dmarket import DMarketClient, DMarketListing
 from handlers import build_router
 from journal import Journal
@@ -16,6 +17,7 @@ from notifier import MarketplaceSignal, Notifier
 from pricing import PriceBook, check, evaluate
 from stars import Stars, build_stars_router
 from stats import Stats
+import waxpeer
 
 log = logging.getLogger("skinarb")
 API = "https://api.skinport.com/v1/sales/history"
@@ -94,9 +96,6 @@ def handle_marketplace_listing(
     access: Access, stats: Stats,
 ) -> None:
     provider = signal.provider.lower()
-    if not journal.add_market_signal(provider, signal.listing_id, signal.price):
-        stats.add(f"{signal.provider}: повтор")
-        return
     matches = []
     for user in access.users():
         if user.paused:
@@ -115,6 +114,10 @@ def handle_marketplace_listing(
                 continue
         matches.append(user.user_id)
 
+    if not matches:
+        stats.add(f"{signal.provider}: нет получателей")
+        return
+    journal.add_market_signal(provider, signal.listing_id, signal.price)
     claimed_users = set(journal.add_market_deliveries(
         provider, signal.listing_id, signal.price, matches))
     for user_id in claimed_users:
@@ -122,6 +125,108 @@ def handle_marketplace_listing(
     stats.add(
         f"{signal.provider}: подошёл" if claimed_users
         else f"{signal.provider}: нет получателей")
+
+
+def handle_waxpeer_listing(listing: waxpeer.WaxpeerListing, journal: Journal,
+                           notifier: Notifier, access: Access, stats: Stats) -> None:
+    handle_marketplace_listing(
+        MarketplaceSignal("Waxpeer", listing.item_id, listing.name, listing.price,
+                          "USD", listing.wear), journal, notifier, access, stats)
+
+
+def has_market_users(access: Access, provider: str) -> bool:
+    return any(not u.paused and (s := access.market_settings(u.user_id, provider))
+               and s.enabled for u in access.users())
+
+
+async def monitor_waxpeer(journal: Journal, notifier: Notifier,
+                          access: Access, stats: Stats) -> None:
+    task = None
+    try:
+        while True:
+            active = has_market_users(access, "waxpeer")
+            if active and (task is None or task.done()):
+                if task is not None:
+                    await asyncio.gather(task, return_exceptions=True)
+                task = asyncio.create_task(waxpeer.listen(
+                    lambda item: handle_waxpeer_listing(item, journal, notifier, access, stats)))
+            elif not active and task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                task = None
+            await asyncio.sleep(5)
+    finally:
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+async def scan_csgomarket(session: aiohttp.ClientSession, currency: str, journal: Journal,
+                          notifier: Notifier, access: Access, stats: Stats) -> None:
+    """Compare complete snapshots; do not promote or emit from a failed scan."""
+    db = journal.db
+    state = f"csgomarket:{currency}"
+    db.execute("CREATE TABLE IF NOT EXISTS csgomarket_snapshot "
+               "(currency TEXT, listing_id TEXT, price REAL NOT NULL, "
+               "PRIMARY KEY (currency, listing_id))")
+    db.execute("CREATE TEMP TABLE IF NOT EXISTS csgomarket_staging "
+               "(listing_id TEXT PRIMARY KEY, name TEXT, price REAL, wear REAL)")
+    with db:
+        db.execute("DELETE FROM csgomarket_staging")
+    batch = []
+    async for item in csgomarket.listings(session, currency):
+        batch.append((item.item_id, item.name, item.price, item.wear))
+        if len(batch) >= 1000:
+            with db:
+                db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?)", batch)
+            batch.clear()
+            await asyncio.sleep(0)
+    if batch:
+        with db:
+            db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?)", batch)
+    if not db.execute("SELECT 1 FROM csgomarket_staging LIMIT 1").fetchone():
+        raise ValueError("Empty CS:GO Market snapshot")
+
+    if journal.market_baseline_completed(state):
+        cursor = db.execute(
+            "SELECT s.listing_id, s.name, s.price, s.wear FROM csgomarket_staging s "
+            "LEFT JOIN csgomarket_snapshot old ON old.currency = ? "
+            "AND old.listing_id = s.listing_id "
+            "WHERE old.listing_id IS NULL OR old.price != s.price", (currency,))
+        while rows := cursor.fetchmany(500):
+            for item_id, name, price, wear in rows:
+                handle_marketplace_listing(
+                    MarketplaceSignal("CSGOMarket", item_id, name, price, currency, wear),
+                    journal, notifier, access, stats)
+            await asyncio.sleep(0)
+    with db:
+        db.execute("DELETE FROM csgomarket_snapshot WHERE currency = ?", (currency,))
+        db.execute("INSERT INTO csgomarket_snapshot SELECT ?, listing_id, price "
+                   "FROM csgomarket_staging", (currency,))
+        db.execute("INSERT INTO market_provider_state (provider, baseline_completed) VALUES (?, 1) "
+                   "ON CONFLICT(provider) DO UPDATE SET baseline_completed = 1", (state,))
+
+
+async def monitor_csgomarket(journal: Journal, notifier: Notifier,
+                             access: Access, stats: Stats) -> None:
+    timeout = aiohttp.ClientTimeout(total=90)
+    currency = marketplace_currency("csgomarket", access.cfg)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            active = has_market_users(access, "csgomarket")
+            if active:
+                try:
+                    await scan_csgomarket(session, currency, journal, notifier, access, stats)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("CS:GO Market scan failed")
+            elif journal.market_baseline_completed(f"csgomarket:{currency}"):
+                with journal.db:
+                    journal.db.execute(
+                        "UPDATE market_provider_state SET baseline_completed = 0 WHERE provider = ?",
+                        (f"csgomarket:{currency}",))
+            await asyncio.sleep(300 if active else 5)
 
 
 def handle_dmarket_listing(
@@ -236,12 +341,19 @@ async def main() -> None:
             tasks.create_task(dispatcher.start_polling(bot, handle_signals=False))
             tasks.create_task(refresh_prices(book, journal, cfg))
             tasks.create_task(listen(book, journal, notifier, access, cfg, stats))
+            tasks.create_task(monitor_waxpeer(journal, notifier, access, stats))
+            tasks.create_task(monitor_csgomarket(journal, notifier, access, stats))
             tasks.create_task(log_stats(stats))
             if billing:
                 tasks.create_task(billing.run(bot))
     finally:
-        await notifier.close()
-        await bot.session.close()
+        try:
+            await notifier.close()
+        finally:
+            try:
+                await bot.session.close()
+            finally:
+                journal.db.close()
 
 
 if __name__ == "__main__":

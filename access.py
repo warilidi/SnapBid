@@ -7,7 +7,14 @@ from dataclasses import dataclass, replace
 
 from config import Config
 
-SUPPORTED_MARKETPLACES = ("skinport", "dmarket")
+SUPPORTED_MARKETPLACES = ("skinport", "dmarket", "waxpeer", "csgomarket")
+NEW_MARKETPLACES = ("waxpeer", "csgomarket")
+
+
+def marketplace_currency(provider: str, cfg: Config) -> str:
+    if provider == "csgomarket" and cfg.currency in ("USD", "EUR", "RUB"):
+        return cfg.currency
+    return "USD"
 
 
 @dataclass(frozen=True)
@@ -71,6 +78,12 @@ class Access:
                 (cfg.min_price, cfg.max_price))
             db.execute(
                 "UPDATE user_market_settings SET enabled = 0 WHERE provider = 'dmarket'")
+            for provider in NEW_MARKETPLACES:
+                db.execute(
+                    "INSERT OR IGNORE INTO user_market_settings "
+                    "(user_id, provider, enabled, min_price, max_price) "
+                    "SELECT user_id, ?, 1, ?, ? FROM users",
+                    (provider, cfg.min_price, cfg.max_price))
             self._add_user(cfg.admin_id, "admin")
 
     def _add_user(self, user_id: int, name: str) -> None:
@@ -89,6 +102,11 @@ class Access:
             "(user_id, provider, enabled, min_price, max_price) "
             "VALUES (?, 'dmarket', 0, ?, ?)",
             (user_id, c.min_price, c.max_price))
+        for provider in NEW_MARKETPLACES:
+            self.db.execute(
+                "INSERT OR IGNORE INTO user_market_settings "
+                "(user_id, provider, enabled, min_price, max_price) VALUES (?, ?, 1, ?, ?)",
+                (user_id, provider, c.min_price, c.max_price))
 
     def is_admin(self, user_id: int) -> bool:
         return user_id == self.cfg.admin_id
@@ -215,7 +233,7 @@ class Access:
     def set_market_float(self, user_id: int, provider: str,
                          low: float, high: float) -> None:
         self._check_provider(provider)
-        if (provider != "dmarket" or not math.isfinite(low) or not math.isfinite(high)
+        if (provider not in ("dmarket", *NEW_MARKETPLACES) or not math.isfinite(low) or not math.isfinite(high)
                 or low < 0 or high > 1 or low >= high):
             raise ValueError("Invalid marketplace float range")
         with self.db:
@@ -223,6 +241,13 @@ class Access:
                 "UPDATE user_market_settings SET min_float = ?, max_float = ? "
                 "WHERE user_id = ? AND provider = ?",
                 (low, high, user_id, provider))
+
+    def clear_market_float(self, user_id: int, provider: str) -> None:
+        self._check_provider(provider)
+        with self.db:
+            self.db.execute(
+                "UPDATE user_market_settings SET min_float = NULL, max_float = NULL "
+                "WHERE user_id = ? AND provider = ?", (user_id, provider))
 
     def set_paused(self, user_id: int, paused: bool) -> None:
         with self.db:

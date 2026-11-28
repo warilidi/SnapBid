@@ -74,7 +74,21 @@ class Notifier:
     def push(self, user_id: int, signal: Notification) -> None:
         queue = self.queues.setdefault(user_id, asyncio.Queue(maxsize=20))
         if queue.full():
-            queue.get_nowait()  # старые лоты уже неактуальны
+            # Keep Skinport profit alerts from being displaced by the larger raw feeds.
+            pending = []
+            while not queue.empty():
+                pending.append(queue.get_nowait())
+                queue.task_done()
+            discard = next((i for i, (_, item) in enumerate(pending)
+                            if isinstance(item, MarketplaceSignal)), None)
+            if discard is None and isinstance(signal, Signal):
+                discard = 0
+            if discard is not None:
+                pending.pop(discard)
+            for item in pending:
+                queue.put_nowait(item)
+            if discard is None:
+                return
         queue.put_nowait((asyncio.get_running_loop().time(), signal))
         if user_id not in self.workers:
             self.workers[user_id] = asyncio.create_task(self._run(user_id, queue))
@@ -102,20 +116,23 @@ class Notifier:
         loop = asyncio.get_running_loop()
         while True:
             created, signal = await queue.get()
-            # Доступ могли отозвать, пока сигнал ждал в очереди
-            if not self._deliverable(user_id, signal) or loop.time() - created > 60:
-                continue
             try:
+                # Доступ могли отозвать, пока сигнал ждал в очереди
+                if not self._deliverable(user_id, signal) or loop.time() - created > 60:
+                    continue
                 try:
-                    await self.send(user_id, signal)
-                except TelegramRetryAfter as e:
-                    await asyncio.sleep(e.retry_after)
-                    if (self._deliverable(user_id, signal)
-                            and loop.time() - created <= 60):
+                    try:
                         await self.send(user_id, signal)
-            except Exception as e:
-                log.warning("Не удалось отправить сигнал %s: %s", user_id, e)
-            await asyncio.sleep(self.pause)
+                    except TelegramRetryAfter as e:
+                        await asyncio.sleep(e.retry_after)
+                        if (self._deliverable(user_id, signal)
+                                and loop.time() - created <= 60):
+                            await self.send(user_id, signal)
+                except Exception as e:
+                    log.warning("Не удалось отправить сигнал %s: %s", user_id, e)
+                await asyncio.sleep(self.pause)
+            finally:
+                queue.task_done()
 
     async def close(self) -> None:
         for task in self.workers.values():

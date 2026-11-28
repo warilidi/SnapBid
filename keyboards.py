@@ -31,11 +31,18 @@ def settings_menu(paused: bool) -> InlineKeyboardMarkup:
     ])
 
 
-def marketplaces_menu(skinport_enabled: bool) -> InlineKeyboardMarkup:
+def marketplaces_menu(skinport_enabled: bool, waxpeer_enabled: bool = False,
+                      csgomarket_enabled: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"Skinport: {'вкл' if skinport_enabled else 'выкл'}",
             callback_data="markets:toggle:skinport")],
+        [InlineKeyboardButton(
+            text=f"Waxpeer: {'вкл' if waxpeer_enabled else 'выкл'}",
+            callback_data="markets:toggle:waxpeer")],
+        [InlineKeyboardButton(
+            text=f"CS:GO Market: {'вкл' if csgomarket_enabled else 'выкл'}",
+            callback_data="markets:toggle:csgomarket")],
         [InlineKeyboardButton(text="Назад к настройкам", callback_data="menu:settings")],
     ])
 
