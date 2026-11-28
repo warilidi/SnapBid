@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import time
 
 import pytest
 
@@ -12,7 +13,7 @@ from notifier import ListingPage, MarketplaceSignal, Notifier
 from pricing import PriceBook
 from stats import Stats
 from test_access import ADMIN, GUEST, setup
-from waxpeer import WaxpeerListing
+from waxpeer import BuyOrderBook, WaxpeerListing
 
 
 def reference_book():
@@ -24,6 +25,13 @@ def reference_book():
         for name, phase, price in [("AK", None, 25), ("AWP", None, 50),
                                    ("★ Knife | Doppler", "Phase 2", 35)]
     ])
+    return book
+
+
+def waxpeer_book():
+    book = BuyOrderBook()
+    book.load({"success": True, "timestamp": int(time.time()),
+               "offers": [{"name": "AK", "max": 25000}]})
     return book
 
 
@@ -67,15 +75,17 @@ def test_waxpeer_delivery_is_per_user_and_deduplicated():
         access.set_market_enabled(ADMIN, "waxpeer", True)
         notifier, stats = CaptureNotifier(), Stats()
         item = WaxpeerListing("123", "AK", 12, .15)
-        handle_waxpeer_listing(item, journal, notifier, access, stats, reference_book())
+        handle_waxpeer_listing(item, journal, notifier, access, stats, waxpeer_book())
         access.set_market_enabled(GUEST, "waxpeer", True)
-        handle_waxpeer_listing(item, journal, notifier, access, stats, reference_book())
-        handle_waxpeer_listing(item, journal, notifier, access, stats, reference_book())
+        handle_waxpeer_listing(item, journal, notifier, access, stats, waxpeer_book())
+        handle_waxpeer_listing(item, journal, notifier, access, stats, waxpeer_book())
         assert [uid for uid, _ in notifier.sent] == [ADMIN, GUEST]
         assert all(s.url == "https://waxpeer.com/ak/item?id=123" and s.currency == "USD"
                    for _, s in notifier.sent)
         await Notifier(bot, access).send(ADMIN, notifier.sent[0][1])
         assert session.markups[-1].inline_keyboard[0][0].url == notifier.sent[0][1].url
+        assert "Макс. заявка на Waxpeer" in session.sent[-1][1]
+        assert "Skinport" not in session.sent[-1][1]
     asyncio.run(run())
 
 
@@ -196,7 +206,7 @@ def test_alert_limit_is_per_marketplace_and_user_and_missing_links_are_skipped(m
 
     deliver(MarketplaceSignal("Waxpeer", "1", "AK", 10, "USD"))
     assert not notifier.sent
-    handle_waxpeer_listing(WaxpeerListing("1", "AK", 10), journal, notifier, access, stats, reference_book())
+    handle_waxpeer_listing(WaxpeerListing("1", "AK", 10), journal, notifier, access, stats, waxpeer_book())
     journal.db.close()
     journal = Journal(path)
     access = Access(journal.db, cfg)
@@ -208,10 +218,10 @@ def test_alert_limit_is_per_marketplace_and_user_and_missing_links_are_skipped(m
     deliver(signal)
     other = WaxpeerListing("3", "AK", 12)
     now[0] += 599
-    handle_waxpeer_listing(other, journal, notifier, access, stats, reference_book())
+    handle_waxpeer_listing(other, journal, notifier, access, stats, waxpeer_book())
     assert [s.listing_id for _, s in notifier.sent] == ["1", "2"]
     now[0] += 1
-    handle_waxpeer_listing(other, journal, notifier, access, stats, reference_book())
+    handle_waxpeer_listing(other, journal, notifier, access, stats, waxpeer_book())
     assert [s.listing_id for _, s in notifier.sent] == ["1", "2", "3"]
     journal.db.close()
 
@@ -235,15 +245,15 @@ def test_market_filters_by_roi_and_requires_fresh_reference_prices():
     access.redeem(access.create_invite(), GUEST, "guest")
     access.set_roi(GUEST, .20)
     notifier, stats = CaptureNotifier(), Stats()
-    book = reference_book()
-    # Net resale value: 25 * 0.92 = 23; ROI at 20 is 15%.
+    book = waxpeer_book()
+    # Net resale value: 25 * 0.94 = 23.50; ROI at 20 is 17.5%.
     item = WaxpeerListing("1", "AK", 20)
-    handle_waxpeer_listing(item, journal, notifier, access, stats, PriceBook())
+    handle_waxpeer_listing(item, journal, notifier, access, stats, BuyOrderBook())
     handle_waxpeer_listing(WaxpeerListing("2", "AK", 22), journal, notifier, access, stats, book)
     assert not notifier.sent
     handle_waxpeer_listing(item, journal, notifier, access, stats, book)
     assert [uid for uid, _ in notifier.sent] == [ADMIN]
-    assert notifier.sent[0][1].roi == pytest.approx(.15)
+    assert notifier.sent[0][1].roi == pytest.approx(.175)
     journal.db.close()
 
 

@@ -67,3 +67,26 @@ def test_feed_subscribes_and_only_dispatches_valid_new_listings(monkeypatch):
     assert ("emit", "sub", {"name": "csgo"}) in calls
     assert calls[-1] == ("disconnect",)
     assert received == [WaxpeerListing("1", "AK", 12.0)]
+
+def test_snapshot_uses_fresh_exact_name_bids_and_expires(monkeypatch):
+    from waxpeer import BuyOrderBook, WaxpeerListing
+
+    now = [1000]
+    monkeypatch.setattr("waxpeer.time.time", lambda: now[0])
+    book = BuyOrderBook()
+    listing = WaxpeerListing("1", "AK | Test (Field-Tested)", 10)
+    payload = {"success": True, "timestamp": 995, "offers": [
+        {"name": listing.name, "max": "24000"},
+        {"name": listing.name, "max": 23000},
+        {"name": listing.name, "max": True},
+        {"name": "★ Knife | Doppler", "max": 50000},
+    ]}
+    book.load(payload)
+    assert book.bid(listing) == 24
+    assert book.bid(WaxpeerListing("2", "AK | Test (Minimal Wear)", 10)) is None
+    assert book.bid(WaxpeerListing("3", "★ Knife | Doppler", 10, phase="Phase 2")) is None
+    with pytest.raises(ValueError):
+        book.load({**payload, "timestamp": 600})
+    assert book.bid(listing) == 24
+    now[0] = 1295
+    assert book.bid(listing) is None

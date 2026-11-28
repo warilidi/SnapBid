@@ -72,10 +72,17 @@ def render_marketplace(s: MarketplaceSignal) -> str:
         lines.append(f"Float: {s.wear:.4f}")
     if s.fair is not None and s.profit is not None and s.roi is not None:
         currency = html.escape(s.currency)
-        lines.extend([
-            f"Ориентир по продажам Skinport: {s.fair:.2f} {currency}",
-            f"Оценка прибыли при продаже на Skinport: {s.profit:.2f} {currency} ({s.roi:.1%})",
-        ])
+        if s.provider.lower() == "waxpeer":
+            lines.extend([
+                f"Макс. заявка на Waxpeer: {s.fair:.2f} {currency}",
+                f"Оценка прибыли после комиссии Waxpeer: {s.profit:.2f} {currency} ({s.roi:.1%})",
+                "<i>Заявка может измениться или иметь условия.</i>",
+            ])
+        else:
+            lines.extend([
+                f"Ориентир по продажам Skinport: {s.fair:.2f} {currency}",
+                f"Оценка прибыли при продаже на Skinport: {s.profit:.2f} {currency} ({s.roi:.1%})",
+            ])
     else:
         lines.append("<i>История продаж и комиссия не включены: данные не подтверждены.</i>")
     return "\n".join(lines)

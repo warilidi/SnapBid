@@ -3,6 +3,7 @@ import asyncio
 import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -12,6 +13,63 @@ import socketio
 log = logging.getLogger("waxpeer")
 SITE = "https://waxpeer.com"
 RECONNECT_DELAY = 15
+BUY_ORDERS_URL = "https://api.waxpeer.com/v1/buy-orders/snapshot"
+SELLING_FEE = 0.06  # https://waxpeer.com/faq/fees-sell
+BUY_ORDERS_REFRESH = 30
+
+
+class BuyOrderBook:
+    """Fresh public buy offers by market hash name. Prices are in USD."""
+
+    MAX_AGE = 300
+
+    def __init__(self) -> None:
+        self._prices: dict[str, float] = {}
+        self._timestamp = 0
+
+    def load(self, payload: object) -> None:
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            raise ValueError("Waxpeer buy order snapshot did not succeed")
+        timestamp, offers = payload.get("timestamp"), payload.get("offers")
+        now = time.time()
+        if type(timestamp) is not int or not now - self.MAX_AGE < timestamp <= now + 30:
+            raise ValueError("Waxpeer buy order snapshot timestamp is invalid or stale")
+        if not isinstance(offers, list):
+            raise ValueError("Waxpeer buy order snapshot has no offers array")
+        if timestamp < self._timestamp:
+            return
+        prices = {}
+        for offer in offers:
+            if not isinstance(offer, dict):
+                continue
+            name, amount = offer.get("name"), offer.get("max")
+            if not isinstance(name, str) or not name:
+                continue
+            if isinstance(amount, str) and re.fullmatch(r"[0-9]{1,15}", amount):
+                amount = int(amount)
+            if type(amount) is int and 0 < amount < 10**15:
+                prices[name] = max(prices.get(name, 0), amount / 1000)
+        self._prices, self._timestamp = prices, timestamp
+
+    def bid(self, listing: "WaxpeerListing") -> float | None:
+        # The snapshot doesn't separate Doppler phases.
+        if (listing.phase or "doppler" in listing.name.lower()
+                or time.time() - self._timestamp >= self.MAX_AGE):
+            return None
+        return self._prices.get(listing.name)
+
+
+async def refresh_buy_orders(book: BuyOrderBook) -> None:
+    timeout = aiohttp.ClientTimeout(total=12)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            try:
+                async with session.get(BUY_ORDERS_URL, params={"game": "csgo"}) as response:
+                    response.raise_for_status()
+                    book.load(await response.json())
+            except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+                log.warning("Waxpeer buy order refresh failed: %s", exc)
+            await asyncio.sleep(BUY_ORDERS_REFRESH)
 
 
 @dataclass(frozen=True)

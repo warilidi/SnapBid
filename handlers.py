@@ -96,7 +96,7 @@ def build_router(access: Access, billing: Billing | None = None,
         user = access.get(user_id)
         if user is not None:
             lines.append(f"Мин. ROI: {user.min_roi:.0%} для всех трёх площадок (/roi).")
-        lines.append("Для CS:GO Market используйте csgomarket. Оценка по продажам Skinport.")
+        lines.append("Waxpeer: оценка по его заявкам. CS:GO Market: по продажам Skinport (csgomarket).")
         return "\n".join(lines)
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:

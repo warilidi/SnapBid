@@ -102,7 +102,10 @@ def handle_marketplace_listing(
     if limited and not signal.url:
         stats.add(f"{signal.provider}: нет ссылки")
         return
-    if limited:
+    if provider == "waxpeer" and signal.roi is None:
+        stats.add("Waxpeer: нет расчёта по заявкам")
+        return
+    if provider == "csgomarket":
         cfg = access.cfg
         history = book.get(make_key(signal.name, signal.phase)) if book and book.is_fresh() else None
         # Never price an unspecified or unrecognised Doppler phase as a different variant.
@@ -152,11 +155,21 @@ def handle_marketplace_listing(
 
 
 def handle_waxpeer_listing(listing: waxpeer.WaxpeerListing, journal: Journal,
-                           notifier: Notifier, access: Access, stats: Stats, book: PriceBook) -> None:
+                           notifier: Notifier, access: Access, stats: Stats,
+                           book: waxpeer.BuyOrderBook) -> None:
+    bid = book.bid(listing)
+    if bid is None:
+        stats.add("Waxpeer: нет свежей заявки")
+        return
+    profit = bid * (1 - waxpeer.SELLING_FEE) - listing.price
+    if profit < access.cfg.min_profit:
+        stats.add("Waxpeer: прибыль ниже порога")
+        return
     handle_marketplace_listing(
         MarketplaceSignal("Waxpeer", listing.item_id, listing.name, listing.price,
-                          "USD", listing.wear, listing.url, phase=listing.phase),
-        journal, notifier, access, stats, book)
+                          "USD", listing.wear, listing.url, phase=listing.phase,
+                          fair=bid, profit=profit, roi=profit / listing.price),
+        journal, notifier, access, stats)
 
 
 def has_market_users(access: Access, provider: str) -> bool:
@@ -165,7 +178,7 @@ def has_market_users(access: Access, provider: str) -> bool:
 
 
 async def monitor_waxpeer(journal: Journal, notifier: Notifier,
-                          access: Access, stats: Stats, book: PriceBook) -> None:
+                          access: Access, stats: Stats, book: waxpeer.BuyOrderBook) -> None:
     task = None
     try:
         while True:
@@ -353,8 +366,8 @@ async def main() -> None:
     book, journal = PriceBook(), Journal(cfg.db_path)
     access = Access(journal.db, cfg)
     market_currency = marketplace_currency("csgomarket", cfg)
-    usd_book = book if cfg.currency == "USD" else PriceBook()
-    cs_book = usd_book if market_currency == "USD" else book
+    cs_book = book if market_currency == cfg.currency else PriceBook()
+    waxpeer_book = waxpeer.BuyOrderBook()
     bot = Bot(cfg.token)
     notifier = Notifier(bot, access)
     dispatcher = Dispatcher()
@@ -369,10 +382,11 @@ async def main() -> None:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(dispatcher.start_polling(bot, handle_signals=False))
             tasks.create_task(refresh_prices(book, journal, cfg))
-            if usd_book is not book:
-                tasks.create_task(refresh_prices(usd_book, None, replace(cfg, currency="USD")))
+            if cs_book is not book:
+                tasks.create_task(refresh_prices(cs_book, None, replace(cfg, currency=market_currency)))
+            tasks.create_task(waxpeer.refresh_buy_orders(waxpeer_book))
             tasks.create_task(listen(book, journal, notifier, access, cfg, stats))
-            tasks.create_task(monitor_waxpeer(journal, notifier, access, stats, usd_book))
+            tasks.create_task(monitor_waxpeer(journal, notifier, access, stats, waxpeer_book))
             tasks.create_task(monitor_csgomarket(journal, notifier, access, stats, cs_book))
             tasks.create_task(log_stats(stats))
             if billing:
