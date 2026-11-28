@@ -32,7 +32,9 @@ def settings_menu(paused: bool) -> InlineKeyboardMarkup:
 
 
 def marketplaces_menu(skinport_enabled: bool, waxpeer_enabled: bool = False,
-                      csgomarket_enabled: bool = False) -> InlineKeyboardMarkup:
+                      csgomarket_enabled: bool = False,
+                      bitskins_enabled: bool = False,
+                      csfloat_enabled: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text=f"Skinport: {'вкл' if skinport_enabled else 'выкл'}",
@@ -43,6 +45,12 @@ def marketplaces_menu(skinport_enabled: bool, waxpeer_enabled: bool = False,
         [InlineKeyboardButton(
             text=f"CS:GO Market: {'вкл' if csgomarket_enabled else 'выкл'}",
             callback_data="markets:toggle:csgomarket")],
+        [InlineKeyboardButton(
+            text=f"BitSkins: {'вкл' if bitskins_enabled else 'выкл'}",
+            callback_data="markets:toggle:bitskins")],
+        [InlineKeyboardButton(
+            text=f"CSFloat: {'вкл' if csfloat_enabled else 'выкл'}",
+            callback_data="markets:toggle:csfloat")],
         [InlineKeyboardButton(text="Назад к настройкам", callback_data="menu:settings")],
     ])
 

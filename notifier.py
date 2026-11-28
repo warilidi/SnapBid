@@ -18,7 +18,12 @@ from access import Access
 from pricing import Signal
 
 log = logging.getLogger("notifier")
-LISTING_HOSTS = {"waxpeer": "waxpeer.com", "csgomarket": "market.csgo.com"}
+LISTING_HOSTS = {
+    "waxpeer": "waxpeer.com",
+    "csgomarket": "market.csgo.com",
+    "bitskins": "bitskins.com",
+    "csfloat": "csfloat.com",
+}
 MAX_LISTING_PAGE_BYTES = 4 * 1024 * 1024
 
 

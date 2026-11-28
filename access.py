@@ -7,8 +7,9 @@ from dataclasses import dataclass, replace
 
 from config import Config
 
-SUPPORTED_MARKETPLACES = ("skinport", "dmarket", "waxpeer", "csgomarket")
-NEW_MARKETPLACES = ("waxpeer", "csgomarket")
+SUPPORTED_MARKETPLACES = (
+    "skinport", "dmarket", "waxpeer", "csgomarket", "bitskins", "csfloat")
+NEW_MARKETPLACES = ("waxpeer", "csgomarket", "bitskins", "csfloat")
 
 
 def marketplace_currency(provider: str, cfg: Config) -> str:

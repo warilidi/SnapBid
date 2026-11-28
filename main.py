@@ -12,6 +12,8 @@ from billing import Billing, CryptoPay
 from config import Config
 import csgomarket
 from dmarket import DMarketClient, DMarketListing
+from csfloat import CSFloatClient, CSFloatListing
+from bitskins import BitSkinsClient, BitSkinsListing
 from handlers import build_router
 from journal import Journal
 from notifier import MarketplaceSignal, Notifier
@@ -98,7 +100,7 @@ def handle_marketplace_listing(
     access: Access, stats: Stats, book: PriceBook | None = None,
 ) -> None:
     provider = signal.provider.lower()
-    limited = provider in ("waxpeer", "csgomarket")
+    limited = provider in ("waxpeer", "csgomarket", "bitskins", "csfloat")
     if limited and not signal.url:
         stats.add(f"{signal.provider}: нет ссылки")
         return
@@ -310,6 +312,119 @@ async def monitor_dmarket(
                 await asyncio.sleep(60)
 
 
+def handle_csfloat_listing(
+    listing: CSFloatListing, journal: Journal, notifier: Notifier,
+    access: Access, stats: Stats, book: PriceBook,
+) -> None:
+    handle_marketplace_listing(
+        MarketplaceSignal(
+            provider="CSFloat",
+            listing_id=listing.listing_id,
+            name=listing.name,
+            price=listing.price,
+            currency="USD",
+            wear=listing.wear,
+            url=listing.url,
+        ),
+        journal, notifier, access, stats, book)
+
+
+async def monitor_csfloat(
+    journal: Journal, notifier: Notifier, access: Access,
+    stats: Stats, book: PriceBook,
+) -> None:
+    client = CSFloatClient()
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            active = has_market_users(access, "csfloat")
+            if active:
+                users = [u for u in access.users() if not u.paused]
+                low = min(
+                    access.market_settings(u.user_id, "csfloat").min_price
+                    for u in users
+                    if access.market_settings(u.user_id, "csfloat"))
+                high = max(
+                    access.market_settings(u.user_id, "csfloat").max_price
+                    for u in users
+                    if access.market_settings(u.user_id, "csfloat"))
+                initialized = journal.market_baseline_completed("csfloat")
+                try:
+                    async for listing in client.listings(session, low, high):
+                        if initialized:
+                            handle_csfloat_listing(
+                                listing, journal, notifier, access, stats, book)
+                        else:
+                            journal.add_market_signal(
+                                "csfloat", listing.listing_id, listing.price)
+                    if not initialized:
+                        journal.complete_market_baseline("csfloat")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    stats.add("CSFloat: ошибка API")
+                    log.exception("CSFloat scan failed")
+            await asyncio.sleep(60 if active else 5)
+
+
+def handle_bitskins_listing(
+    listing: BitSkinsListing, journal: Journal, notifier: Notifier,
+    access: Access, stats: Stats, book: PriceBook,
+) -> None:
+    handle_marketplace_listing(
+        MarketplaceSignal(
+            provider="BitSkins",
+            listing_id=listing.listing_id,
+            name=listing.name,
+            price=listing.price,
+            currency="USD",
+            wear=listing.wear,
+            url=listing.url,
+        ),
+        journal, notifier, access, stats, book)
+
+
+async def monitor_bitskins(
+    journal: Journal, notifier: Notifier, access: Access,
+    stats: Stats, book: PriceBook,
+) -> None:
+    if not access.cfg.bitskins_api_key or not access.cfg.bitskins_api_secret:
+        while True:
+            await asyncio.sleep(60)
+    client = BitSkinsClient(
+        access.cfg.bitskins_api_key, access.cfg.bitskins_api_secret)
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        while True:
+            active = has_market_users(access, "bitskins")
+            if active:
+                users = [u for u in access.users() if not u.paused]
+                settings = [
+                    access.market_settings(u.user_id, "bitskins")
+                    for u in users
+                ]
+                settings = [s for s in settings if s]
+                low = min(s.min_price for s in settings)
+                high = max(s.max_price for s in settings)
+                initialized = journal.market_baseline_completed("bitskins")
+                try:
+                    async for listing in client.listings(session, low, high):
+                        if initialized:
+                            handle_bitskins_listing(
+                                listing, journal, notifier, access, stats, book)
+                        else:
+                            journal.add_market_signal(
+                                "bitskins", listing.listing_id, listing.price)
+                    if not initialized:
+                        journal.complete_market_baseline("bitskins")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    stats.add("BitSkins: ошибка API")
+                    log.exception("BitSkins scan failed")
+            await asyncio.sleep(60 if active else 5)
+
+
 async def log_stats(stats: Stats) -> None:
     while True:
         await asyncio.sleep(60)
@@ -374,6 +489,8 @@ async def main() -> None:
             tasks.create_task(listen(book, journal, notifier, access, cfg, stats))
             tasks.create_task(monitor_waxpeer(journal, notifier, access, stats, usd_book))
             tasks.create_task(monitor_csgomarket(journal, notifier, access, stats, cs_book))
+            tasks.create_task(monitor_csfloat(journal, notifier, access, stats, usd_book))
+            tasks.create_task(monitor_bitskins(journal, notifier, access, stats, usd_book))
             tasks.create_task(log_stats(stats))
             if billing:
                 tasks.create_task(billing.run(bot))

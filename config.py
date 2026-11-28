@@ -40,6 +40,8 @@ class Config:
     db_path: str = "signals.db"
     dmarket_api_key: str = field(default="", repr=False)
     dmarket_secret_key: str = field(default="", repr=False)
+    bitskins_api_key: str = field(default="", repr=False)
+    bitskins_api_secret: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -69,4 +71,6 @@ class Config:
             db_path=env("DB_PATH", d.db_path),
             dmarket_api_key=env("DMARKET_API_KEY", ""),
             dmarket_secret_key=env("DMARKET_SECRET_KEY", ""),
+            bitskins_api_key=env("BITSKINS_API_KEY", ""),
+            bitskins_api_secret=env("BITSKINS_API_SECRET", ""),
         )

@@ -80,23 +80,27 @@ def build_router(access: Access, billing: Billing | None = None,
     def marketplace_keyboard(user_id: int) -> InlineKeyboardMarkup:
         return marketplaces_menu(*[
             bool((settings := access.market_settings(user_id, provider)) and settings.enabled)
-            for provider in ("skinport", "waxpeer", "csgomarket")
+            for provider in ("skinport", "waxpeer", "csgomarket", "bitskins", "csfloat")
         ])
 
     def marketplaces_text(user_id: int) -> str:
         lines = ["Выберите площадку:"]
-        for provider, name in (("waxpeer", "Waxpeer"), ("csgomarket", "CS:GO Market")):
+        for provider, name in (
+                ("waxpeer", "Waxpeer"),
+                ("csgomarket", "CS:GO Market"),
+                ("bitskins", "BitSkins"),
+                ("csfloat", "CSFloat")):
             s = access.market_settings(user_id, provider)
             if s:
                 wear = (f"; float {s.min_float:g}–{s.max_float:g}"
                         if s.min_float is not None and s.max_float is not None else "")
                 lines.append(f"{name}: {s.min_price:g}–{s.max_price:g} "
                              f"{marketplace_currency(provider, access.cfg)}{wear}")
-        lines.append("Цена: /marketprice waxpeer 5 300; float: /marketfloat waxpeer 0 0.5")
+        lines.append("Цена: /marketprice csfloat 5 300; float: /marketfloat csfloat 0 0.5")
         user = access.get(user_id)
         if user is not None:
-            lines.append(f"Мин. ROI: {user.min_roi:.0%} для всех трёх площадок (/roi).")
-        lines.append("Для CS:GO Market используйте csgomarket. Оценка по продажам Skinport.")
+            lines.append(f"Мин. ROI: {user.min_roi:.0%} для всех площадок (/roi).")
+        lines.append("Для CS:GO Market используйте csgomarket, для CSFloat — csfloat.")
         return "\n".join(lines)
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -266,7 +270,8 @@ def build_router(access: Access, billing: Billing | None = None,
 
     @router.callback_query(F.data.in_({
         "markets:toggle:skinport", "markets:toggle:dmarket",
-        "markets:toggle:waxpeer", "markets:toggle:csgomarket"}))
+        "markets:toggle:waxpeer", "markets:toggle:csgomarket",
+        "markets:toggle:bitskins", "markets:toggle:csfloat"}))
     async def toggle_market(q: CallbackQuery):
         if not isinstance(q.message, Message) or q.message.chat.type != "private":
             return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
