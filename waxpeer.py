@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -19,6 +20,11 @@ class WaxpeerListing:
     name: str
     price: float  # USD
     wear: float | None = None
+
+    @property
+    def url(self) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+        return f"{SITE}/{slug or 'cs2'}/item?id={self.item_id}"
 
 
 def parse_listing(data: object) -> WaxpeerListing:

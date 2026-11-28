@@ -22,6 +22,7 @@ import waxpeer
 log = logging.getLogger("skinarb")
 API = "https://api.skinport.com/v1/sales/history"
 SITE = "https://skinport.com"
+MARKET_ALERT_INTERVAL = 600
 REFRESH = 10 * 60  # лимит API: 8 запросов за 5 минут, нам хватает одного за 10
 
 
@@ -96,6 +97,10 @@ def handle_marketplace_listing(
     access: Access, stats: Stats,
 ) -> None:
     provider = signal.provider.lower()
+    limited = provider in ("waxpeer", "csgomarket")
+    if limited and not signal.url:
+        stats.add(f"{signal.provider}: нет ссылки")
+        return
     matches = []
     for user in access.users():
         if user.paused:
@@ -117,21 +122,23 @@ def handle_marketplace_listing(
     if not matches:
         stats.add(f"{signal.provider}: нет получателей")
         return
-    journal.add_market_signal(provider, signal.listing_id, signal.price)
     claimed_users = set(journal.add_market_deliveries(
-        provider, signal.listing_id, signal.price, matches))
+        provider, signal.listing_id, signal.price, matches,
+        cooldown=MARKET_ALERT_INTERVAL if limited else 0))
+    if claimed_users:
+        journal.add_market_signal(provider, signal.listing_id, signal.price)
     for user_id in claimed_users:
         notifier.push(user_id, signal)
     stats.add(
         f"{signal.provider}: подошёл" if claimed_users
-        else f"{signal.provider}: нет получателей")
+        else f"{signal.provider}: повтор или лимит")
 
 
 def handle_waxpeer_listing(listing: waxpeer.WaxpeerListing, journal: Journal,
                            notifier: Notifier, access: Access, stats: Stats) -> None:
     handle_marketplace_listing(
         MarketplaceSignal("Waxpeer", listing.item_id, listing.name, listing.price,
-                          "USD", listing.wear), journal, notifier, access, stats)
+                          "USD", listing.wear, listing.url), journal, notifier, access, stats)
 
 
 def has_market_users(access: Access, provider: str) -> bool:
@@ -170,33 +177,34 @@ async def scan_csgomarket(session: aiohttp.ClientSession, currency: str, journal
                "(currency TEXT, listing_id TEXT, price REAL NOT NULL, "
                "PRIMARY KEY (currency, listing_id))")
     db.execute("CREATE TEMP TABLE IF NOT EXISTS csgomarket_staging "
-               "(listing_id TEXT PRIMARY KEY, name TEXT, price REAL, wear REAL)")
+               "(listing_id TEXT PRIMARY KEY, name TEXT, price REAL, wear REAL, phase TEXT)")
     with db:
         db.execute("DELETE FROM csgomarket_staging")
     batch = []
     async for item in csgomarket.listings(session, currency):
-        batch.append((item.item_id, item.name, item.price, item.wear))
+        batch.append((item.item_id, item.name, item.price, item.wear, item.phase))
         if len(batch) >= 1000:
             with db:
-                db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?)", batch)
+                db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?, ?)", batch)
             batch.clear()
             await asyncio.sleep(0)
     if batch:
         with db:
-            db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?)", batch)
+            db.executemany("INSERT OR REPLACE INTO csgomarket_staging VALUES (?, ?, ?, ?, ?)", batch)
     if not db.execute("SELECT 1 FROM csgomarket_staging LIMIT 1").fetchone():
         raise ValueError("Empty CS:GO Market snapshot")
 
     if journal.market_baseline_completed(state):
         cursor = db.execute(
-            "SELECT s.listing_id, s.name, s.price, s.wear FROM csgomarket_staging s "
+            "SELECT s.listing_id, s.name, s.price, s.wear, s.phase FROM csgomarket_staging s "
             "LEFT JOIN csgomarket_snapshot old ON old.currency = ? "
             "AND old.listing_id = s.listing_id "
             "WHERE old.listing_id IS NULL OR old.price != s.price", (currency,))
         while rows := cursor.fetchmany(500):
-            for item_id, name, price, wear in rows:
+            for item_id, name, price, wear, phase in rows:
+                item = csgomarket.Listing(item_id, name, price, currency, wear, phase)
                 handle_marketplace_listing(
-                    MarketplaceSignal("CSGOMarket", item_id, name, price, currency, wear),
+                    MarketplaceSignal("CSGOMarket", item_id, name, price, currency, wear, item.url),
                     journal, notifier, access, stats)
             await asyncio.sleep(0)
     with db:

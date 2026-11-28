@@ -7,7 +7,8 @@ import csgomarket
 import main
 from access import Access
 from config import Config
-from main import handle_waxpeer_listing, scan_csgomarket
+from main import handle_marketplace_listing, handle_waxpeer_listing, scan_csgomarket
+from notifier import MarketplaceSignal, Notifier
 from stats import Stats
 from test_access import ADMIN, GUEST, setup
 from waxpeer import WaxpeerListing
@@ -47,7 +48,7 @@ def test_market_settings_are_independent_and_commands_apply():
 
 def test_waxpeer_delivery_is_per_user_and_deduplicated():
     async def run():
-        journal, access, _, _, _, _ = setup(Config(admin_id=ADMIN))
+        journal, access, bot, session, _, _ = setup(Config(admin_id=ADMIN))
         access.redeem(access.create_invite(), GUEST, "guest")
         access.set_market_enabled(GUEST, "waxpeer", False)
         access.set_market_enabled(ADMIN, "waxpeer", True)
@@ -58,7 +59,10 @@ def test_waxpeer_delivery_is_per_user_and_deduplicated():
         handle_waxpeer_listing(item, journal, notifier, access, stats)
         handle_waxpeer_listing(item, journal, notifier, access, stats)
         assert [uid for uid, _ in notifier.sent] == [ADMIN, GUEST]
-        assert all(s.url is None and s.currency == "USD" for _, s in notifier.sent)
+        assert all(s.url == "https://waxpeer.com/ak/item?id=123" and s.currency == "USD"
+                   for _, s in notifier.sent)
+        await Notifier(bot, access).send(ADMIN, notifier.sent[0][1])
+        assert session.markups[-1].inline_keyboard[0][0].url == notifier.sent[0][1].url
     asyncio.run(run())
 
 
@@ -100,9 +104,10 @@ def test_csgomarket_snapshot_baseline_failures_and_changes(monkeypatch):
         assert notifier.sent == []
         assert journal.db.execute("SELECT price FROM csgomarket_snapshot").fetchone() == (20,)
         await scan_csgomarket(None, "EUR", journal, notifier, access, stats)
-        assert [(s.listing_id, s.price) for _, s in notifier.sent] == [("1", 15), ("2", 30)]
+        assert [(s.listing_id, s.price, s.url) for _, s in notifier.sent] == [
+            ("1", 15, "https://market.csgo.com/ru/AK?id=1")]
         await scan_csgomarket(None, "EUR", journal, notifier, access, stats)
-        assert len(notifier.sent) == 2
+        assert len(notifier.sent) == 1
     asyncio.run(run())
 
 
@@ -161,3 +166,38 @@ def test_main_starts_both_market_monitors(monkeypatch):
         with pytest.raises(sqlite3.ProgrammingError):
             journals[0].db.execute("SELECT 1")
     asyncio.run(run())
+
+def test_alert_limit_is_per_marketplace_and_user_and_missing_links_are_skipped(monkeypatch, tmp_path):
+    from journal import Journal
+
+    now = [1000.0]
+    monkeypatch.setattr("journal.time.time", lambda: now[0])
+    path = str(tmp_path / "signals.db")
+    cfg = Config(admin_id=ADMIN)
+    journal = Journal(path)
+    access = Access(journal.db, cfg)
+    notifier, stats = CaptureNotifier(), Stats()
+
+    def deliver(signal):
+        handle_marketplace_listing(signal, journal, notifier, access, stats)
+
+    deliver(MarketplaceSignal("Waxpeer", "1", "AK", 10, "USD"))
+    assert not notifier.sent
+    handle_waxpeer_listing(WaxpeerListing("1", "AK", 10), journal, notifier, access, stats)
+    journal.db.close()
+    journal = Journal(path)
+    access = Access(journal.db, cfg)
+    item = csgomarket.Listing("2", "★ Knife | Doppler", 20, "EUR", .01, "Phase 2")
+    signal = MarketplaceSignal("CSGOMarket", item.item_id, item.name, item.price,
+                               item.currency, item.wear, item.url)
+    assert item.url == (
+        "https://market.csgo.com/ru/%E2%98%85%20Knife%20%7C%20Doppler?id=2&phase-product=Phase+2")
+    deliver(signal)
+    other = WaxpeerListing("3", "AK", 12)
+    now[0] += 599
+    handle_waxpeer_listing(other, journal, notifier, access, stats)
+    assert [s.listing_id for _, s in notifier.sent] == ["1", "2"]
+    now[0] += 1
+    handle_waxpeer_listing(other, journal, notifier, access, stats)
+    assert [s.listing_id for _, s in notifier.sent] == ["1", "2", "3"]
+    journal.db.close()

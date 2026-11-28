@@ -33,11 +33,11 @@
 - У каждого свои настройки сигналов: `/pause`, `/resume`, `/settings`.
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:1f75509d0dccbfc68c0b90d2d52d78cd33034010e5f5d80cf448de2aaea37600 -->
+<!-- coderabbit-ai-generated-section:v1:12a1ceba8382e0d42030895b64197a9abdeeaa71b5d020c059d5e479fd16f5e1 -->
 
 - В меню «Площадки и фильтры» можно включать и отключать Skinport, Waxpeer и CS:GO Market отдельно для каждого участника. Все три источника включены по умолчанию; выбранные настройки сохраняются при перезапуске.
 - Skinport использует [live Sale Feed](https://docs.skinport.com/websocket/sale-feed) и [историю продаж](https://docs.skinport.com/items). Waxpeer использует [публичный Socket.IO feed](https://docs.waxpeer.com/socketio), CS:GO Market — [экспорт предложений](https://market.dota2.net/docs-v2) (документация общей платформы для CS2 и Dota 2). API-ключи не нужны. Доступность площадок из РФ не проверена.
-- Сигналы Waxpeer и CS:GO Market содержат ID, название, цену и доступный float. Прямая ссылка на лот, история продаж и ROI для них не подтверждены и не показываются. `/roi` и `/price` относятся к Skinport; для других площадок используйте `/marketprice waxpeer 5 300` или `/marketprice csgomarket 5 300` и `/marketfloat waxpeer 0 0.5` (сброс — `/marketfloat waxpeer off`). Валюта Waxpeer — USD, CS:GO Market — `CURRENCY` (USD, EUR или RUB; иначе USD). Фильтры отображаются в меню площадок.
+- Сигналы Waxpeer и CS:GO Market содержат ID, название, цену и доступный float. Кнопка «Открыть лот» передаёт ID объявления. Каждая из двух площадок отправляет не более одного уведомления за десять минут на участника; события сверх лимита пропускаются. История продаж и ROI для этих площадок не показываются. `/roi` и `/price` относятся к Skinport; для других площадок используйте `/marketprice waxpeer 5 300` или `/marketprice csgomarket 5 300` и `/marketfloat waxpeer 0 0.5` (сброс — `/marketfloat waxpeer off`). Валюта Waxpeer — USD, CS:GO Market — `CURRENCY` (USD, EUR или RUB; иначе USD). Фильтры отображаются в меню площадок.
 - CS:GO Market считывает полный снимок, затем ждёт пять минут до следующего. Первый полный снимок после включения служит базой и не отправляет существующие лоты; последующие содержат новые лоты и изменения цен. Экспорт крупный и требует места в базе и времени на загрузку.
 - DMarket остаётся отключён из-за ограничений площадки. BitSkins, CSFloat, BUFF163, SkinBaron, GamerPay и агрегаторы пока не подключены.
 
@@ -93,9 +93,9 @@
   поля исторического объёма, комиссии или точного URL объявления; эти значения не выдумываются.
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:0bddc0fb6a86bb2204aa019f94c000274c49d4030f6a4311a7e0d14f689658e0 -->
+<!-- coderabbit-ai-generated-section:v1:1301d40724106e32f371ef89c62c73c0ce3e6bfbe7998bb959ad353a1127e26f -->
 
-- Waxpeer и CS:GO Market отправляют ID лота без прямой ссылки и расчёта ROI.
+- Waxpeer и CS:GO Market отправляют ссылку на лот без расчёта ROI.
 
 <!-- /coderabbit-ai-generated:v1 -->
 - Комиссию (`FEE`) сверяйте на сайте.
