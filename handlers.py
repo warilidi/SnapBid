@@ -6,7 +6,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from access import Access, User
+from access import Access, User, marketplace_currency
 from billing import Billing, date, pay_keyboard
 from keyboards import (
     admin_menu, back_to_menu, main_menu, marketplaces_menu, settings_menu,
@@ -21,6 +21,8 @@ HELP = """Команды:
 /status — время работы и статистика
 /roi 12 — минимальная чистая прибыль, %
 /price 5 300 — диапазон цены лота
+/marketprice waxpeer 5 300 — цена для площадки
+/marketfloat waxpeer 0 0.5 — диапазон float для площадки
 /pause — остановить сигналы
 /resume — включить сигналы"""
 
@@ -75,8 +77,24 @@ def build_router(access: Access, billing: Billing | None = None,
             f"Доступ: {'до ' + date(u.expires_at) if u.expires_at else 'бессрочно'}\n"
             "Фильтры ROI и цены меняются командами /roi и /price.")
 
-    def marketplaces_text() -> str:
-        return "Выберите площадку:"
+    def marketplace_keyboard(user_id: int) -> InlineKeyboardMarkup:
+        return marketplaces_menu(*[
+            bool((settings := access.market_settings(user_id, provider)) and settings.enabled)
+            for provider in ("skinport", "waxpeer", "csgomarket")
+        ])
+
+    def marketplaces_text(user_id: int) -> str:
+        lines = ["Выберите площадку:"]
+        for provider, name in (("waxpeer", "Waxpeer"), ("csgomarket", "CS:GO Market")):
+            s = access.market_settings(user_id, provider)
+            if s:
+                wear = (f"; float {s.min_float:g}–{s.max_float:g}"
+                        if s.min_float is not None and s.max_float is not None else "")
+                lines.append(f"{name}: {s.min_price:g}–{s.max_price:g} "
+                             f"{marketplace_currency(provider, access.cfg)}{wear}")
+        lines.append("Цена: /marketprice waxpeer 5 300; float: /marketfloat waxpeer 0 0.5")
+        lines.append("Для CS:GO Market используйте csgomarket. ROI не рассчитывается.")
+        return "\n".join(lines)
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:
         if access.is_banned(user_id):
@@ -238,14 +256,14 @@ def build_router(access: Access, billing: Billing | None = None,
         user = access.get(q.from_user.id)
         if user is None:
             return await q.answer("Доступ закрыт.", show_alert=True)
-        skinport = access.market_settings(user.user_id, "skinport")
         await q.answer()
         await q.bot.send_message(
-            user.user_id, marketplaces_text(),
-            reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
+            user.user_id, marketplaces_text(user.user_id),
+            reply_markup=marketplace_keyboard(user.user_id))
 
     @router.callback_query(F.data.in_({
-        "markets:toggle:skinport", "markets:toggle:dmarket"}))
+        "markets:toggle:skinport", "markets:toggle:dmarket",
+        "markets:toggle:waxpeer", "markets:toggle:csgomarket"}))
     async def toggle_market(q: CallbackQuery):
         if not isinstance(q.message, Message) or q.message.chat.type != "private":
             return await q.answer("Сообщение устарело. Нажмите /start.", show_alert=True)
@@ -261,10 +279,9 @@ def build_router(access: Access, billing: Billing | None = None,
         except ValueError as exc:
             return await q.answer(str(exc), show_alert=True)
         await q.answer("Настройки площадки обновлены.")
-        skinport = access.market_settings(user.user_id, "skinport")
         await q.bot.send_message(
-            user.user_id, marketplaces_text(),
-            reply_markup=marketplaces_menu(bool(skinport and skinport.enabled)))
+            user.user_id, marketplaces_text(user.user_id),
+            reply_markup=marketplace_keyboard(user.user_id))
 
     @router.callback_query(F.data == "markets:filters:dmarket")
     async def menu_dmarket_filters(q: CallbackQuery):
@@ -420,6 +437,29 @@ def build_router(access: Access, billing: Billing | None = None,
             return await m.answer("Пример: /price 5 300")
         access.set_price(m.from_user.id, *v)
         await m.answer(f"Цена: {v[0]:g}–{v[1]:g} {access.cfg.currency}")
+
+    @router.message(Command("marketprice", "marketfloat"), allowed)
+    async def market_filter(m: Message, command: CommandObject):
+        provider, _, args = (command.args or "").strip().partition(" ")
+        provider = provider.lower()
+        if (provider in ("waxpeer", "csgomarket") and command.command == "marketfloat"
+                and args.strip().lower() == "off"):
+            access.clear_market_float(m.from_user.id, provider)
+            return await m.answer(f"{provider}: фильтр float выключен")
+        values = numbers(args, 2)
+        if provider not in ("waxpeer", "csgomarket") or not values or values[0] >= values[1]:
+            return await m.answer(f"Пример: /{command.command} waxpeer "
+                                  + ("5 300" if command.command == "marketprice" else "0 0.5"))
+        try:
+            if command.command == "marketprice":
+                access.set_market_price(m.from_user.id, provider, *values)
+                unit = " " + marketplace_currency(provider, access.cfg)
+            else:
+                access.set_market_float(m.from_user.id, provider, *values)
+                unit = " float"
+        except ValueError:
+            return await m.answer("Неверный диапазон.")
+        await m.answer(f"{provider}: {values[0]:g}–{values[1]:g}{unit}")
 
     @router.message(Command("pause", "resume"), allowed)
     async def pause(m: Message, command: CommandObject):

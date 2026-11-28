@@ -202,7 +202,7 @@ def test_marketplace_inline_controls_disable_dmarket_in_restricted_regions():
         assert access.redeem(access.create_invite(), GUEST, "guest")
 
         await tap(GUEST, "markets:open")
-        assert session.sent[-1][1] == "Выберите площадку:"
+        assert session.sent[-1][1].startswith("Выберите площадку:")
         assert "DMarket" not in session.sent[-1][1]
         assert "Россия" not in session.sent[-1][1]
         assert all(
