@@ -3,6 +3,7 @@ import asyncio
 import math
 import re
 from dataclasses import dataclass
+from urllib.parse import quote, urlencode
 
 import aiohttp
 
@@ -21,6 +22,14 @@ class Listing:
     price: float
     currency: str
     wear: float | None
+    phase: str | None = None
+
+    @property
+    def url(self) -> str:
+        params = {"id": self.item_id}
+        if self.phase:
+            params["phase-product"] = self.phase
+        return f"https://market.csgo.com/ru/{quote(self.name, safe='')}?{urlencode(params)}"
 
 
 def parse_manifest(data: object, currency: str) -> tuple[list[str], list[str]]:
@@ -62,7 +71,9 @@ def parse_listing(row: object, fields: list[str], currency: str) -> Listing:
         wear = None
     if wear is not None and not 0 <= wear <= 1:
         wear = None
-    return Listing(str(item_id), name.strip(), amount, currency, wear)
+    phase = data.get("phase")
+    return Listing(str(item_id), name.strip(), amount, currency, wear,
+                   phase if isinstance(phase, str) and phase else None)
 
 
 async def listings(session: aiohttp.ClientSession, currency: str):

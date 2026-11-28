@@ -35,6 +35,10 @@ class Journal:
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS market_provider_state (
                 provider TEXT PRIMARY KEY, baseline_completed INTEGER NOT NULL DEFAULT 0)""")
+        self.db.execute("""
+            CREATE TABLE IF NOT EXISTS market_alert_cooldown (
+                user_id INTEGER NOT NULL, provider TEXT NOT NULL, last_claimed REAL NOT NULL,
+                PRIMARY KEY (user_id, provider))""")
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(signals)")}
         for column in ("sale_id", "asset_id"):
             if column not in columns:
@@ -92,18 +96,29 @@ class Journal:
                 "SET baseline_completed = 1", (provider,))
 
     def add_market_deliveries(
-        self, provider: str, listing_id: str, price: float, user_ids: list[int]
+        self, provider: str, listing_id: str, price: float, user_ids: list[int],
+        *, cooldown: float = 0,
     ) -> list[int]:
         claimed = []
         if not user_ids:
             return claimed
+        now = time.time()
         with self.db:
             for user_id in user_ids:
                 cur = self.db.execute(
-                    "INSERT OR IGNORE INTO market_deliveries VALUES (?, ?, ?, ?)",
-                    (user_id, provider, listing_id, price))
-                if cur.rowcount == 1:
-                    claimed.append(user_id)
+                    "INSERT OR IGNORE INTO market_deliveries "
+                    "SELECT ?, ?, ?, ? WHERE ? = 0 OR NOT EXISTS ("
+                    "SELECT 1 FROM market_alert_cooldown "
+                    "WHERE user_id = ? AND provider = ? AND last_claimed > ?)",
+                    (user_id, provider, listing_id, price, cooldown, user_id, provider, now - cooldown))
+                if cur.rowcount != 1:
+                    continue
+                if cooldown:
+                    self.db.execute(
+                        "INSERT INTO market_alert_cooldown VALUES (?, ?, ?) "
+                        "ON CONFLICT(user_id, provider) DO UPDATE SET last_claimed = excluded.last_claimed",
+                        (user_id, provider, now))
+                claimed.append(user_id)
         return claimed
 
     def check_outcomes(self, book: PriceBook, cfg: Config, now: float | None = None) -> int:

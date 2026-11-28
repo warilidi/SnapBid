@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import math
+import re
 from dataclasses import dataclass
 from typing import Callable
 
@@ -19,6 +20,12 @@ class WaxpeerListing:
     name: str
     price: float  # USD
     wear: float | None = None
+    phase: str | None = None
+
+    @property
+    def url(self) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+        return f"{SITE}/{slug or 'cs2'}/item?id={self.item_id}"
 
 
 def parse_listing(data: object) -> WaxpeerListing:
@@ -42,7 +49,9 @@ def parse_listing(data: object) -> WaxpeerListing:
         wear = None
     elif not 0 <= wear <= 1:
         wear = None
-    return WaxpeerListing(item_id, name.strip(), usd, wear)
+    phase = data.get("phase")
+    return WaxpeerListing(item_id, name.strip(), usd, wear,
+                          phase if isinstance(phase, str) and phase else None)
 
 
 async def listen(on_listing: Callable[[WaxpeerListing], None]) -> None:
