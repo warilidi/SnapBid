@@ -93,7 +93,10 @@ def build_router(access: Access, billing: Billing | None = None,
                 lines.append(f"{name}: {s.min_price:g}–{s.max_price:g} "
                              f"{marketplace_currency(provider, access.cfg)}{wear}")
         lines.append("Цена: /marketprice waxpeer 5 300; float: /marketfloat waxpeer 0 0.5")
-        lines.append("Для CS:GO Market используйте csgomarket. ROI не рассчитывается.")
+        user = access.get(user_id)
+        if user is not None:
+            lines.append(f"Мин. ROI: {user.min_roi:.0%} для всех трёх площадок (/roi).")
+        lines.append("Для CS:GO Market используйте csgomarket. Оценка по продажам Skinport.")
         return "\n".join(lines)
 
     def purchase_text(user_id: int) -> tuple[str, InlineKeyboardMarkup | None]:

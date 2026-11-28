@@ -20,6 +20,7 @@ class WaxpeerListing:
     name: str
     price: float  # USD
     wear: float | None = None
+    phase: str | None = None
 
     @property
     def url(self) -> str:
@@ -48,7 +49,9 @@ def parse_listing(data: object) -> WaxpeerListing:
         wear = None
     elif not 0 <= wear <= 1:
         wear = None
-    return WaxpeerListing(item_id, name.strip(), usd, wear)
+    phase = data.get("phase")
+    return WaxpeerListing(item_id, name.strip(), usd, wear,
+                          phase if isinstance(phase, str) and phase else None)
 
 
 async def listen(on_listing: Callable[[WaxpeerListing], None]) -> None:

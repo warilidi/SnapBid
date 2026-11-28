@@ -2,9 +2,9 @@
 
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:dc7b86816d8994630cc8eac4a110c8e3b000dfd8704bba05d743c172ed28a5d2 -->
+<!-- coderabbit-ai-generated-section:v1:1011f4f8c5981bf61c668e8915a291efc8b5a9da84c9f6f4160d944b566a28e2 -->
 
-Для Skinport бот сравнивает новые лоты с медианой продаж и сообщает о расчётной прибыли. Waxpeer и CS:GO Market отправляют подходящие лоты по цене и float без оценки ROI. Покупка выполняется вручную.
+Для Skinport бот сравнивает новые лоты с медианой продаж и сообщает о расчётной прибыли. Waxpeer и CS:GO Market тоже отбирают лоты по расчётной прибыли, используя продажи на Skinport как ориентир. Покупка выполняется вручную.
 
 <!-- /coderabbit-ai-generated:v1 -->
 
@@ -33,11 +33,11 @@
 - У каждого свои настройки сигналов: `/pause`, `/resume`, `/settings`.
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:12a1ceba8382e0d42030895b64197a9abdeeaa71b5d020c059d5e479fd16f5e1 -->
+<!-- coderabbit-ai-generated-section:v1:61905d2d9f0e33615b838276362ba6662e8227a528bd523fc7f63a1b7abd3e98 -->
 
 - В меню «Площадки и фильтры» можно включать и отключать Skinport, Waxpeer и CS:GO Market отдельно для каждого участника. Все три источника включены по умолчанию; выбранные настройки сохраняются при перезапуске.
 - Skinport использует [live Sale Feed](https://docs.skinport.com/websocket/sale-feed) и [историю продаж](https://docs.skinport.com/items). Waxpeer использует [публичный Socket.IO feed](https://docs.waxpeer.com/socketio), CS:GO Market — [экспорт предложений](https://market.dota2.net/docs-v2) (документация общей платформы для CS2 и Dota 2). API-ключи не нужны. Доступность площадок из РФ не проверена.
-- Сигналы Waxpeer и CS:GO Market содержат ID, название, цену и доступный float. Кнопка «Открыть лот» передаёт ID объявления. Каждая из двух площадок отправляет не более одного уведомления за десять минут на участника; события сверх лимита пропускаются. История продаж и ROI для этих площадок не показываются. `/roi` и `/price` относятся к Skinport; для других площадок используйте `/marketprice waxpeer 5 300` или `/marketprice csgomarket 5 300` и `/marketfloat waxpeer 0 0.5` (сброс — `/marketfloat waxpeer off`). Валюта Waxpeer — USD, CS:GO Market — `CURRENCY` (USD, EUR или RUB; иначе USD). Фильтры отображаются в меню площадок.
+- Сигналы Waxpeer и CS:GO Market содержат ID, название, цену и доступный float. Кнопка «Открыть лот» передаёт ID объявления. Каждая из двух площадок отправляет не более одного уведомления за десять минут на участника; события сверх лимита пропускаются. Перед отправкой бот сверяет ID и название с публичной страницей площадки; если точное объявление не подтверждается, сигнала не будет. Для новых площадок цена перепродажи оценивается по свежим продажам Skinport в валюте лота. Применяются те же пороги прибыли и объёма продаж, что для Skinport. `/roi` задаёт общий личный порог, `/price` относится к Skinport; для других площадок используйте `/marketprice waxpeer 5 300` или `/marketprice csgomarket 5 300` и `/marketfloat waxpeer 0 0.5` (сброс — `/marketfloat waxpeer off`). Валюта Waxpeer — USD, CS:GO Market — `CURRENCY` (USD, EUR или RUB; иначе USD). Фильтры отображаются в меню площадок.
 - CS:GO Market считывает полный снимок, затем ждёт пять минут до следующего. Первый полный снимок после включения служит базой и не отправляет существующие лоты; последующие содержат новые лоты и изменения цен. Экспорт крупный и требует места в базе и времени на загрузку.
 - DMarket остаётся отключён из-за ограничений площадки. BitSkins, CSFloat, BUFF163, SkinBaron, GamerPay и агрегаторы пока не подключены.
 
@@ -93,9 +93,9 @@
   поля исторического объёма, комиссии или точного URL объявления; эти значения не выдумываются.
 <!-- coderabbit-ai-generated:v1 -->
 
-<!-- coderabbit-ai-generated-section:v1:1301d40724106e32f371ef89c62c73c0ce3e6bfbe7998bb959ad353a1127e26f -->
+<!-- coderabbit-ai-generated-section:v1:2a9dfb5e6a29d102b5155431e676b66dea1586f6d340f9554cb28cabff9a7736 -->
 
-- Waxpeer и CS:GO Market отправляют ссылку на лот без расчёта ROI.
+- Waxpeer и CS:GO Market показывают расчётный ROI при перепродаже на Skinport и ссылку с подтверждённым ID. Доступность лота может измениться после уведомления.
 
 <!-- /coderabbit-ai-generated:v1 -->
 - Комиссию (`FEE`) сверяйте на сайте.
